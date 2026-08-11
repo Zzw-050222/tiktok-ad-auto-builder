@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>TikTok 广告自动搭建工具</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2f3a;
+    --text: #e6e8ec;
+    --muted: #8b93a3;
+    --accent: #2f8fff;
+    --ok: #2fbf71;
+    --err: #ff5c5c;
+    --warn: #e8b339;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 32px 16px 80px;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  .card h2 { font-size: 15px; margin: 0 0 14px; color: var(--muted); font-weight: 600; }
+
+  .dropzone {
+    border: 2px dashed var(--border);
+    border-radius: 10px;
+    padding: 28px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s;
+  }
+  .dropzone:hover, .dropzone.drag { border-color: var(--accent); }
+  .dropzone input { display: none; }
+  .dropzone .hint { color: var(--muted); font-size: 13px; margin-top: 6px; }
+
+  .file-info {
+    display: none;
+    margin-top: 14px;
+    padding: 12px 14px;
+    background: #10261a;
+    border: 1px solid #1f4a30;
+    border-radius: 8px;
+    font-size: 13px;
+    color: #8fe6b0;
+  }
+  .file-error {
+    display: none;
+    margin-top: 14px;
+    padding: 12px 14px;
+    background: #2a1414;
+    border: 1px solid #5a2222;
+    border-radius: 8px;
+    font-size: 13px;
+    color: #ff9a9a;
+  }
+
+  .row { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+  label.check { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text); cursor: pointer; }
+
+  button.run {
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 22px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 18px;
+  }
+  button.run:disabled { background: #2b3542; color: #6b7280; cursor: not-allowed; }
+  button.run:hover:not(:disabled) { filter: brightness(1.1); }
+
+  .progress-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+  .progress-count { font-size: 20px; font-weight: 700; }
+  .progress-status { font-size: 13px; color: var(--muted); }
+  .bar-bg { height: 8px; background: #22262f; border-radius: 999px; overflow: hidden; margin-bottom: 14px; }
+  .bar-fill { height: 100%; background: var(--accent); width: 0%; transition: width .3s; }
+  .current-line { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+
+  .result-item {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+    font-size: 13px;
+  }
+  .result-item .head { display: flex; justify-content: space-between; align-items: center; }
+  .badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
+  .badge.ok { background: #10261a; color: var(--ok); }
+  .badge.err { background: #2a1414; color: var(--err); }
+  .warn-list { margin: 8px 0 0; padding-left: 18px; color: var(--warn); font-size: 12.5px; }
+  .err-text { margin: 8px 0 0; color: var(--err); font-size: 12.5px; white-space: pre-wrap; }
+
+  .fatal { background: #2a1414; border: 1px solid #5a2222; border-radius: 8px; padding: 14px; color: #ff9a9a; font-size: 13px; white-space: pre-wrap; }
+
+  .empty-hint { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>TikTok 广告自动搭建工具</h1>
+  <div class="sub">上传表格 → 点击运行 → 自动搭建计划/广告组/广告</div>
+
+  <div class="card">
+    <h2>第一步：上传表格</h2>
+    <div class="dropzone" id="dropzone">
+      <div>点击选择 .xlsx 文件，或把文件拖到这里</div>
+      <div class="hint">需要包含：Campaign Name, Budget, Advertiser ID, Ad Group Name, TT Mini ID, roas_bid, TT Mini URL, Region, Mini Game Name, ads_text, Identity_ID（Business Center Account ID / optimization_event / Ad Group Name Number 可选，没有也行）</div>
+      <input type="file" id="fileInput" accept=".xlsx">
+    </div>
+    <div class="file-info" id="fileInfo"></div>
+    <div class="file-error" id="fileError"></div>
+
+    <div class="row">
+      <label class="check">
+        <input type="checkbox" id="publishCheck" checked>
+        运行完成后自动发布（会真实开始投放花钱；不勾选则只搭建到草稿，需要你自己手动点发布）
+      </label>
+    </div>
+
+    <button class="run" id="runBtn" disabled>开始搭建</button>
+  </div>
+
+  <div class="card" id="progressCard" style="display:none;">
+    <h2>进度</h2>
+    <div class="progress-head">
+      <div class="progress-count" id="progressCount">0 / 0</div>
+      <div class="progress-status" id="progressStatus"></div>
+    </div>
+    <div class="bar-bg"><div class="bar-fill" id="barFill"></div></div>
+    <div class="current-line" id="currentLine"></div>
+    <div id="fatalBox"></div>
+    <div id="resultList"></div>
+  </div>
+</div>
+
+<script>
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const fileInfo = document.getElementById('fileInfo');
+const fileError = document.getElementById('fileError');
+const runBtn = document.getElementById('runBtn');
+const publishCheck = document.getElementById('publishCheck');
+const progressCard = document.getElementById('progressCard');
+const progressCount = document.getElementById('progressCount');
+const progressStatus = document.getElementById('progressStatus');
+const barFill = document.getElementById('barFill');
+const currentLine = document.getElementById('currentLine');
+const resultList = document.getElementById('resultList');
+const fatalBox = document.getElementById('fatalBox');
+
+let uploaded = false;
+let pollTimer = null;
+
+dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag'));
+dropzone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropzone.classList.remove('drag');
+  if (e.dataTransfer.files.length) {
+    fileInput.files = e.dataTransfer.files;
+    doUpload(e.dataTransfer.files[0]);
+  }
+});
+fileInput.addEventListener('change', () => {
+  if (fileInput.files.length) doUpload(fileInput.files[0]);
+});
+
+function doUpload(file) {
+  fileInfo.style.display = 'none';
+  fileError.style.display = 'none';
+  const form = new FormData();
+  form.append('file', file);
+  fetch('/upload', { method: 'POST', body: form })
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) {
+        uploaded = true;
+        fileInfo.textContent = `已上传: ${data.filename} — 共 ${data.row_count} 行，${data.campaign_count} 个计划`;
+        fileInfo.style.display = 'block';
+        runBtn.disabled = false;
+      } else {
+        fileError.textContent = data.error || '上传失败';
+        fileError.style.display = 'block';
+        runBtn.disabled = true;
+      }
+    })
+    .catch(() => {
+      fileError.textContent = '上传出错，请重试';
+      fileError.style.display = 'block';
+    });
+}
+
+runBtn.addEventListener('click', () => {
+  if (!uploaded) return;
+  runBtn.disabled = true;
+  runBtn.textContent = '运行中...';
+  progressCard.style.display = 'block';
+  resultList.innerHTML = '';
+  fatalBox.innerHTML = '';
+
+  fetch('/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ publish: publishCheck.checked }),
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (!data.ok) {
+        alert(data.error || '启动失败');
+        runBtn.disabled = false;
+        runBtn.textContent = '开始搭建';
+        return;
+      }
+      startPolling();
+    });
+});
+
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(poll, 1200);
+  poll();
+}
+
+function statusLabel(s) {
+  return { idle: '未开始', running: '运行中', done: '已完成', error: '出错' }[s] || s;
+}
+
+function poll() {
+  fetch('/status').then(r => r.json()).then(render);
+}
+
+function render(s) {
+  progressCount.textContent = `${s.completed} / ${s.total}`;
+  progressStatus.textContent = statusLabel(s.status);
+  const pct = s.total ? (s.completed / s.total * 100) : 0;
+  barFill.style.width = pct + '%';
+  currentLine.textContent = s.current ? `正在搭建: ${s.current}` : '';
+
+  if (s.fatal_error) {
+    fatalBox.innerHTML = `<div class="fatal">脚本运行出错，未能跑完：\n${escapeHtml(s.fatal_error)}</div>`;
+  } else {
+    fatalBox.innerHTML = '';
+  }
+
+  resultList.innerHTML = s.results.map(r => {
+    const badge = r.success
+      ? '<span class="badge ok">成功</span>'
+      : '<span class="badge err">失败</span>';
+    let inner = `<div class="head"><div><strong>${escapeHtml(r.campaign_name)}</strong> (${r.ad_group_count} 个广告组)</div>${badge}</div>`;
+    if (r.error) {
+      inner += `<div class="err-text">${escapeHtml(r.error)}</div>`;
+    }
+    if (r.warnings && r.warnings.length) {
+      inner += '<ul class="warn-list">' + r.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('') + '</ul>';
+    }
+    return `<div class="result-item">${inner}</div>`;
+  }).join('') || '<div class="empty-hint">暂无结果</div>';
+
+  if (s.status === 'done' || s.status === 'error') {
+    clearInterval(pollTimer);
+    runBtn.disabled = false;
+    runBtn.textContent = '开始搭建';
+  }
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str == null ? '' : String(str);
+  return div.innerHTML;
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+venv/
+browser_profile/
+.env
+__pycache__/
+*.pyc
+logs/
+.claude/
+
+# real business data - never publish these, keep local only
+uploads/
+data/
+inspect_out.json
+Identity_id.xlsx
+260810-1.xlsx
+campaign_bulk_*.xlsx
+*.output
+
+# one-off debugging/probe scripts written during development - kept locally
+# for reference, not meant for other people using this tool
+src/dev_probe_*.py
+src/dev_build_step*.py
+src/dev_click_create.py
+src/dev_test_*.py
+src/dev_set_language.py
+src/dev_probe.py
