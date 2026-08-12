@@ -46,6 +46,28 @@ def robust_click(page, locator, timeout=5000):
     locator.evaluate("el => el.click()")
 
 
+def click_to_open(trigger_locator, timeout=10000):
+    """Click a toggle-style dropdown/popover trigger EXACTLY ONCE, swallowing
+    a timeout exception rather than escalating to a force-click or JS click.
+    Escalating (like robust_click does) is unsafe here: confirmed live that a
+    plain click can report a Playwright TimeoutError - blocked by a
+    transient intercepting overlay - while the popover still ends up open
+    anyway (a partial pointer event got through during Playwright's internal
+    retries). A second, forced click then lands on an ALREADY-open toggle and
+    closes it right back, so all downstream "find something inside the now-
+    open dropdown" logic - including any fallback scrolling - ends up
+    operating on a closed page instead. Tried several ways to positively
+    detect "is it already open" (ARIA state, page text markers, DOM
+    ancestors) before landing on this - none were reliable, partly because
+    this account's picker uses shadow DOM. Trust the caller's own downstream
+    readiness wait/retry instead of trying to detect state here.
+    """
+    try:
+        trigger_locator.click(timeout=timeout)
+    except Exception:
+        pass
+
+
 def exit_draft(page):
     page.get_by_role("button", name="退出", exact=True).first.click(timeout=10000)
     page.wait_for_timeout(1000)

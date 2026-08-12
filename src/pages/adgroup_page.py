@@ -51,7 +51,29 @@ def select_mini_game(page, mini_game_name: str, tt_mini_id: str):
     picker = page.get_by_placeholder("选择 TikTok Mini")
     if picker.count() == 0:
         picker = page.get_by_text("选择 TikTok Mini", exact=True)
-    picker.first.click(timeout=10000)
+
+    # A SINGLE force click, nothing else. Tried several other ways first, all
+    # confirmed worse live:
+    # - a plain (non-forced) click can report a Playwright timeout (an
+    #   overlay briefly intercepts) while the dropdown still ends up open
+    #   anyway from a partial pointer event during Playwright's retries - a
+    #   second, escalated click then lands on that ALREADY-open toggle and
+    #   closes it right back. On at least one account, a plain click also
+    #   sometimes just genuinely had no effect at all (dropdown never opened).
+    # - detecting "is it already open" via ambient page text (any "ID:"
+    #   match, even requiring >=2 of them) is NOT reliable on every account -
+    #   confirmed live: false positives from unrelated "ID:" text elsewhere
+    #   on the page caused a retry-until-open loop to skip clicking entirely.
+    # A single force click (skips the actionability/interception checks a
+    # plain click waits on, so no misleading timeout) is the one variant
+    # that reliably opened it in live testing. If it still doesn't open
+    # anything for some account, the ID-based scroll search below simply
+    # finds nothing and raises a clear error - an honest failure, not a
+    # silent wrong click.
+    try:
+        picker.first.click(timeout=10000, force=True)
+    except Exception:
+        pass
     page.wait_for_timeout(800)
 
     def target_match():
@@ -60,13 +82,12 @@ def select_mini_game(page, mini_game_name: str, tt_mini_id: str):
             c = page.locator(f"text=ID：{tt_mini_id}")
         return c if c.count() > 0 else None
 
-    # Some accounts have a real search that narrows this same list once typed
-    # into (the picker field itself is the filter, not a separate search box).
-    # Other accounts with many authorized mini games have NO search at all
-    # here and typing is a silent no-op - confirmed live on one such account:
-    # opening the picker shows a plain scrollable list, no search input
-    # anywhere in it.
-    page.keyboard.type(mini_game_name)
+    # NEVER type mini_game_name to search - confirmed live this can silently
+    # land in whatever field had focus before (e.g. ad-group-name) when the
+    # picker didn't actually open, with no reliable way to tell in advance
+    # that it's safe to type. The ID-based scroll search below is the sole
+    # mechanism now - slower on search-capable accounts, but never corrupts
+    # an unrelated field.
     match = wait_until(page, target_match, timeout_seconds=15)
 
     if not match:
@@ -172,7 +193,7 @@ def set_regions(page, region_id_name_pairs):
     encodes TikTok's exact location id - avoids fuzzy-text mis-clicks (e.g. a
     "巴西" search also surfacing "巴西兰迪亚, ..." rows with the same substring).
     """
-    from src.pages.common import dismiss_popups, robust_click
+    from src.pages.common import click_to_open, dismiss_popups, robust_click
 
     dismiss_popups(page)
 
@@ -198,7 +219,7 @@ def set_regions(page, region_id_name_pairs):
     for region_id, name in region_id_name_pairs:
         if search_input.count() == 0 or not search_input.first.is_visible():
             field = locate_region_field()
-            field.first.click(timeout=10000)
+            click_to_open(field.first, timeout=10000)
             page.wait_for_timeout(800)
             search_input.wait_for(state="visible", timeout=10000)
 
@@ -234,7 +255,7 @@ def _locate_region_field(page):
 
 
 def _select_all_available_regions_once(page):
-    from src.pages.common import robust_click
+    from src.pages.common import click_to_open, robust_click
 
     field = _locate_region_field(page)
     for _ in range(15):
@@ -245,7 +266,7 @@ def _select_all_available_regions_once(page):
         field = _locate_region_field(page)
     field.first.wait_for(state="visible", timeout=10000)
     field.first.scroll_into_view_if_needed(timeout=5000)
-    field.first.click(timeout=10000)
+    click_to_open(field.first, timeout=10000)
     page.wait_for_timeout(1000)
 
     # the list needs a moment to refresh to the newly-selected mini game's actual
@@ -290,7 +311,7 @@ def _select_all_available_regions_once(page):
 
 
 def _select_all_available_regions_except_once(page, excluded_ids):
-    from src.pages.common import robust_click, wait_until
+    from src.pages.common import click_to_open, robust_click, wait_until
     from src.region_lookup import load_region_map
 
     region_map = load_region_map()
@@ -306,7 +327,7 @@ def _select_all_available_regions_except_once(page, excluded_ids):
         field = _locate_region_field(page)
     field.first.wait_for(state="visible", timeout=10000)
     field.first.scroll_into_view_if_needed(timeout=5000)
-    field.first.click(timeout=10000)
+    click_to_open(field.first, timeout=10000)
     page.wait_for_timeout(1000)
 
     def list_ready():
@@ -316,53 +337,67 @@ def _select_all_available_regions_except_once(page, excluded_ids):
 
     wait_until(page, list_ready, timeout_seconds=60)
 
-    unchecked = page.locator('span.ant-tree-checkbox[aria-checked="false"]')
+    # The region tree is VIRTUALIZED (rows get removed from the DOM once
+    # scrolled far enough away, confirmed live on an account with a long
+    # country list) - so a "select everything, then scroll back up to
+    # uncheck the excluded one" approach is unreliable: by the time "select
+    # all" finishes scrolling to the bottom, the excluded row may no longer
+    # exist in the DOM at all to find and uncheck. Fixed design: iterate ROWS
+    # (not raw checkboxes) forward-only, checking each row's own text against
+    # the excluded names BEFORE deciding whether to click its own checkbox -
+    # this way the excluded row is simply never clicked in the first place,
+    # regardless of how far the list scrolls or whether virtualization later
+    # removes it from the DOM. Self-correcting for virtualization too: rows
+    # scrolled past and recycled don't need revisiting, since their checked
+    # state persists in the underlying data even once un-rendered.
+    excluded_names_list = list(excluded_names.values())
+    seen_excluded = set()
+
+    def process_visible_rows():
+        newly_checked = 0
+        rows = page.locator(".ant-tree-treenode")
+        for i in range(rows.count()):
+            row = rows.nth(i)
+            try:
+                text = row.inner_text()
+            except Exception:
+                continue
+            matched_excluded = next((n for n in excluded_names_list if n in text), None)
+            if matched_excluded:
+                seen_excluded.add(matched_excluded)
+                continue
+            checkbox = row.locator(".ant-tree-checkbox")
+            if checkbox.count() == 0:
+                continue
+            if checkbox.first.get_attribute("aria-checked") != "false":
+                continue
+            checkbox.first.scroll_into_view_if_needed(timeout=5000)
+            robust_click(page, checkbox.first, timeout=5000)
+            newly_checked += 1
+            page.wait_for_timeout(200)
+        return newly_checked
+
     checked_count = 0
     stale_rounds = 0
-    for _ in range(200):
-        count = unchecked.count()
-        if count == 0:
-            if stale_rounds >= 2:
-                break
-            page.mouse.wheel(0, 300)
-            page.wait_for_timeout(400)
+    for _ in range(300):
+        checked_count += process_visible_rows()
+        row_count_before = page.locator(".ant-tree-treenode").count()
+        page.mouse.wheel(0, 300)
+        page.wait_for_timeout(400)
+        row_count_after = page.locator(".ant-tree-treenode").count()
+        if row_count_after == row_count_before:
             stale_rounds += 1
-            unchecked = page.locator('span.ant-tree-checkbox[aria-checked="false"]')
-            continue
-        stale_rounds = 0
-        box = unchecked.first
-        box.scroll_into_view_if_needed(timeout=5000)
-        robust_click(page, box, timeout=5000)
-        checked_count += 1
-        page.wait_for_timeout(250)
-        unchecked = page.locator('span.ant-tree-checkbox[aria-checked="false"]')
-
-    # Uncheck each excluded region WHILE THE PICKER IS STILL OPEN from the
-    # select-all pass above - confirmed live that closing and reopening the
-    # field afterward doesn't work, because the field's placeholder text
-    # ("搜索或选择地域", what _locate_region_field matches on) disappears once
-    # anything is selected, leaving nothing to click to reopen it. Also
-    # confirmed live that data-testid=lego-search-result-content-{id} (used by
-    # set_regions for exact-id targeting) only exists for filtered SEARCH
-    # results, not this unsearched full-tree view - so match by the tree row's
-    # own visible text instead via the stable antd class ".ant-tree-treenode".
-    failed_regions = []
-    for region_id, name in excluded_names.items():
-        row = page.locator(".ant-tree-treenode").filter(has_text=name)
-        if row.count() == 0:
-            failed_regions.append((region_id, name))
-            continue
-        checkbox = row.first.locator(".ant-tree-checkbox")
-        if checkbox.count() == 0:
-            failed_regions.append((region_id, name))
-            continue
-        checkbox.first.scroll_into_view_if_needed(timeout=5000)
-        robust_click(page, checkbox.first, timeout=5000)
-        checked_count -= 1
-        page.wait_for_timeout(300)
+            if stale_rounds >= 3:
+                break
+        else:
+            stale_rounds = 0
 
     page.keyboard.press("Escape")
     page.wait_for_timeout(500)
+
+    failed_regions = [
+        (rid, name) for rid, name in excluded_names.items() if name not in seen_excluded
+    ]
     return checked_count, missing_ids, failed_regions
 
 

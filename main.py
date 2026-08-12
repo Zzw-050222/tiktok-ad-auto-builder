@@ -25,12 +25,19 @@ def main(xlsx_path):
             viewport={"width": 1600, "height": 1000},
         )
         page = context.pages[0] if context.pages else context.new_page()
+        creative_usage = {}
 
         for (advertiser_id, campaign_name), rows in groups:
             print(f"\n=== 搭建计划: {campaign_name} ({len(rows)} 个广告组) ===")
             budget = rows[0]["Budget"]
             result = build_campaign_group(
-                page, str(advertiser_id), str(campaign_name), budget, rows, publish=PUBLISH
+                page,
+                str(advertiser_id),
+                str(campaign_name),
+                budget,
+                rows,
+                publish=PUBLISH,
+                creative_usage=creative_usage,
             )
             result["campaign_name"] = campaign_name
             results.append(result)

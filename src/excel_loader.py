@@ -20,7 +20,20 @@ REQUIRED_COLUMNS = [
 #   is selected, so this column's value is never actually used
 # - Ad Group Name Number: how many EXTRA identical copies of this row's ad group
 #   to duplicate (on top of the one built from the row itself); defaults to 0
-OPTIONAL_COLUMNS = ["Business Center Account ID", "optimization_event", "Ad Group Name Number"]
+# - CreativeFile: the exact search term to type into the creative-material
+#   library's search box - only used when Creative Number > 2 (see below)
+# - Creative Number: if > 2, switches this row to manually searching and
+#   picking this many materials from the library instead of leaving TikTok's
+#   "自动选择" (auto-select) creative behavior as-is (the long-standing
+#   default for <=2 or blank) - doubles as both the on/off switch and the
+#   count, so no separate toggle column is needed
+OPTIONAL_COLUMNS = [
+    "Business Center Account ID",
+    "optimization_event",
+    "Ad Group Name Number",
+    "CreativeFile",
+    "Creative Number",
+]
 
 
 def load_rows(xlsx_path):

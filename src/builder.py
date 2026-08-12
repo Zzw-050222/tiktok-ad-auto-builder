@@ -1,7 +1,13 @@
 import re
 
 from src.identity_lookup import resolve_identity
-from src.pages.ad_page import fill_ad_copy, fill_landing_url, select_identity, wait_ad_page_ready
+from src.pages.ad_page import (
+    fill_ad_copy,
+    fill_landing_url,
+    select_creative_materials,
+    select_identity,
+    wait_ad_page_ready,
+)
 from src.pages.adgroup_page import (
     fill_ad_group_name,
     fill_adgroup_budget_if_present,
@@ -89,7 +95,38 @@ def fill_adgroup_core(page, rec, budget=None, needs_adgroup_budget=False):
     }
 
 
-def fill_ad_core(page, rec):
+def _creative_count_for(rec):
+    val = rec.get("Creative Number")
+    try:
+        return int(val) if val not in (None, "") else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def fill_ad_core(page, rec, advertiser_id, creative_usage):
+    """creative_usage: dict shared across an entire run (NOT per-campaign),
+    keyed by (advertiser_id, tt_mini_id) -> how many search results have
+    already been used - so multiple campaigns targeting the same mini game on
+    the same account pick different materials instead of all reusing the
+    first N. Caller creates one fresh dict per run and passes the same one
+    into every build_campaign_group call.
+    """
+    creative_issue = None
+    count = _creative_count_for(rec)
+    if count > 2:
+        search_term = str(rec.get("CreativeFile") or "").strip()
+        if search_term:
+            key = (str(advertiser_id), str(rec["TT Mini ID"]))
+            skip = creative_usage.get(key, 0)
+            selected = select_creative_materials(page, search_term, count, skip=skip)
+            creative_usage[key] = skip + selected
+            if selected < count:
+                creative_issue = (
+                    f"素材库搜索 '{search_term}' 只选到 {selected}/{count} 个素材（素材库里不够了）"
+                )
+        else:
+            creative_issue = "Creative Number 大于2但 CreativeFile 是空的，跳过手动选素材"
+
     identity_id = str(rec["Identity_ID"]).strip() if rec["Identity_ID"] else ""
     handle = resolve_identity(identity_id) if identity_id else None
     identity_issue = None
@@ -103,7 +140,9 @@ def fill_ad_core(page, rec):
 
     fill_ad_copy(page, str(rec["ads_text"]))
     fill_landing_url(page, str(rec["TT Mini URL"]))
-    return identity_issue
+
+    issues = [i for i in (creative_issue, identity_issue) if i]
+    return "；".join(issues) if issues else None
 
 
 def _extra_copies_for(rec):
@@ -114,7 +153,9 @@ def _extra_copies_for(rec):
         return 0
 
 
-def build_campaign_group(page, advertiser_id, campaign_name, budget, rows, publish=False):
+def build_campaign_group(
+    page, advertiser_id, campaign_name, budget, rows, publish=False, creative_usage=None
+):
     """rows: list of record dicts sharing the same Campaign Name. Each row gets its
     own ad group + ad built from scratch (row 0 uses the ad group created by the
     campaign flow itself; rows 1+ get a fresh BLANK ad group via the campaign's "+"
@@ -122,8 +163,14 @@ def build_campaign_group(page, advertiser_id, campaign_name, budget, rows, publi
     a row's ad group AND ad are both fully filled in does its own
     'Ad Group Name Number' (if any) get duplicated - duplicating any earlier only
     copies incomplete ad content.
+    creative_usage: shared dict across a whole run for the manual-creative-material
+    de-duplication offset (see fill_ad_core) - pass the SAME dict into every call
+    within one run; a fresh dict is created here only if the caller doesn't
+    care about that (e.g. building a single standalone campaign).
     Returns dict: {"success": bool, "error": str|None, "warnings": [str]}
     """
+    if creative_usage is None:
+        creative_usage = {}
     warnings = []
     try:
         start_new_campaign(page, advertiser_id)
@@ -155,7 +202,7 @@ def build_campaign_group(page, advertiser_id, campaign_name, budget, rows, publi
 
             continue_step(page)
             wait_ad_page_ready(page)
-            issue = fill_ad_core(page, rec)
+            issue = fill_ad_core(page, rec, advertiser_id, creative_usage)
             if issue:
                 warnings.append(f"[{rec['Ad Group Name']}] {issue}")
 
