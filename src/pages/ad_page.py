@@ -1,3 +1,74 @@
+import re
+
+
+def _wait_visible(page, text_or_re, what, timeout_seconds=60):
+    """等一个文字元素出现【并且可见】，最多 timeout_seconds，返回那个可见元素。
+
+    比裸的 scroll_into_view_if_needed(timeout=10000) 强在两点：给足这个平台真实
+    需要的时间（见 common.wait_until 的注释），以及在页面上存在多个同文本副本
+    （其中大部分尺寸为 0）时挑出真正能点的那一个 —— 这页面上这种情况很常见。
+    """
+    from src.pages.common import wait_until
+
+    def visible_one():
+        loc = page.get_by_text(text_or_re)
+        n = loc.count()
+        for i in range(min(n, 12)):
+            if loc.nth(i).is_visible():
+                return loc.nth(i)
+        return None
+
+    found = wait_until(page, visible_one, timeout_seconds=timeout_seconds)
+    if not found:
+        raise ValueError(f"等了 {timeout_seconds} 秒还没看到{what}")
+    return found
+
+
+def _wait_visible_button(page, name, what, timeout_seconds=60):
+    """同上，但按钮走 role 定位。"""
+    from src.pages.common import wait_until
+
+    def visible_one():
+        loc = page.get_by_role("button", name=name, exact=True)
+        n = loc.count()
+        for i in range(min(n, 12)):
+            if loc.nth(i).is_visible():
+                return loc.nth(i)
+        return None
+
+    found = wait_until(page, visible_one, timeout_seconds=timeout_seconds)
+    if not found:
+        raise ValueError(f"等了 {timeout_seconds} 秒还没看到{what}")
+    return found
+
+
+def _scroll_library_to_bottom(page, tiles):
+    """把素材库面板滚到底 —— 触发下一批 30 个素材加载的必要条件。
+
+    对最后一个已加载的素材卡做 scroll_into_view_if_needed，比按固定像素 wheel
+    可靠得多：不用猜卡片高度，也不会因为一次只滚 400px 而根本没触到底部。之后
+    再补几次 wheel，确保确实压在底部、把懒加载触发出来。
+
+    锚点必须取真实可见卡片的坐标，绝不能用硬编码坐标 —— 硬编码位置可能整个错过
+    这个面板，去滚了底层页面（这个坑项目里别处已经踩过并写在注释里了）。
+    """
+    n = tiles.count()
+    if n == 0:
+        return
+    last = tiles.nth(n - 1)
+    try:
+        last.scroll_into_view_if_needed(timeout=5000)
+    except Exception:
+        pass
+    box = last.bounding_box()
+    if not box:
+        return
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    for _ in range(4):
+        page.mouse.wheel(0, 800)
+        page.wait_for_timeout(300)
+
+
 def wait_ad_page_ready(page):
     page.get_by_text("创意素材", exact=True).wait_for(state="visible", timeout=90000)
     page.wait_for_timeout(1000)
@@ -50,7 +121,12 @@ def select_creative_materials(page, search_term: str, count: int, skip: int = 0)
 
     dismiss_popups(page)
 
-    # the "自动选择" box can take a while to finish generating
+    # the "自动选择" box can take a while to finish generating.
+    #
+    # 这个守卫单独用是不可靠的：它的判据是「'正在加载中' 不存在就算好了」，而
+    # wait_until 是立刻开始轮询的——页面还没【开始】加载时这个字样自然也不存在，
+    # 于是第一次轮询就直接放行，等于什么都没等。真正的等待必须落在「目标元素出现」
+    # 上（见下面的 _wait_visible），这里留着它只是为了在确实处于加载中时多等一会。
     def not_loading():
         loc = page.get_by_text("正在加载中", exact=False)
         return True if loc.count() == 0 else None
@@ -58,17 +134,25 @@ def select_creative_materials(page, search_term: str, count: int, skip: int = 0)
     wait_until(page, not_loading, timeout_seconds=60)
     page.wait_for_timeout(500)
 
-    auto_select_box = page.get_by_text("自动选择", exact=True)
-    auto_select_box.first.scroll_into_view_if_needed(timeout=10000)
-    robust_click(page, auto_select_box.first, timeout=5000)
+    # 2026-08-14 实测：'自动选择' 这个框会晚于 10 秒才渲染出来（当天 TikTok 给
+    # 这块加了「自动选择功能重磅上线」的推广横幅，整体变慢）。原来直接
+    # scroll_into_view_if_needed(timeout=10000) 就会在 10 秒时抛
+    # TimeoutError，而抓失败现场时元素其实已经在页面上了。改成 60 秒轮询等它
+    # 【可见】，跟本项目其它地方（set_target_roas、区域列表等）统一。
+    #
+    # 用锚定的正则而不是 exact=True：页面上同时存在「自动选择功能重磅上线」这个
+    # 横幅，它包含「自动选择」但不能点。锚定首尾正好把它排除掉。
+    auto_select_box = _wait_visible(page, re.compile(r"^\s*自动选择\s*$"), "自动选择的框")
+    auto_select_box.scroll_into_view_if_needed(timeout=10000)
+    robust_click(page, auto_select_box, timeout=5000)
     page.wait_for_timeout(1500)
 
     # the TOP-LEVEL "+ 添加创意素材" button - NOT the nested "+ 添加内容"
     # under "你的自有内容" (that path was confirmed inconsistent across
     # accounts, this one is not)
-    top_add_btn = page.get_by_role("button", name="添加创意素材", exact=True)
-    top_add_btn.first.scroll_into_view_if_needed(timeout=10000)
-    robust_click(page, top_add_btn.first, timeout=5000)
+    top_add_btn = _wait_visible_button(page, "添加创意素材", "顶层的「添加创意素材」按钮")
+    top_add_btn.scroll_into_view_if_needed(timeout=10000)
+    robust_click(page, top_add_btn, timeout=5000)
     page.wait_for_timeout(1200)
 
     # switch to the "创意素材库" tab - a plain text match is ambiguous (an
@@ -116,38 +200,62 @@ def select_creative_materials(page, search_term: str, count: int, skip: int = 0)
     checkboxes = lib_pane.get_by_role("checkbox")
 
     selected = 0
-    target_end = skip + count
     idx = skip
     stable_rounds = 0
     for _ in range(200):
         cur_total = checkboxes.count()
-        while idx < min(cur_total, target_end):
-            checkboxes.nth(idx).scroll_into_view_if_needed(timeout=5000)
-            robust_click(page, checkboxes.nth(idx), timeout=5000)
+
+        # 往前推进直到真的选够 count 个。
+        #
+        # 原来的条件是 idx < min(cur_total, skip + count)，配合无条件
+        # selected += 1。两个问题：
+        #  * robust_click 的最后一级兜底是 JS 直接派发 el.click()，永远不抛错，
+        #    所以 selected 统计的是「点击次数」而不是「真正选中数」。2026-08-14
+        #    实测出现过「返回 30，实际只有 29 个变成选中态」。
+        #  * 调用方用这个返回值累加 creative_usage 的偏移量
+        #    （creative_usage[key] = skip + selected），虚高会让后续计划的 skip
+        #    越算越偏，最终重复选到已经用过的素材——去重就白做了。
+        #  * 而且上限写死在 skip+count，一旦中间有点击失败，就再也补不回来了。
+        # 改成：以「真正变成选中态」计数，并且允许越过 skip+count 去补足。
+        while selected < count and idx < cur_total:
+            cb = checkboxes.nth(idx)
+            cb.scroll_into_view_if_needed(timeout=5000)
+            robust_click(page, cb, timeout=5000)
             page.wait_for_timeout(250)
             idx += 1
-            selected += 1
+            try:
+                if cb.get_attribute("aria-checked") == "true":
+                    selected += 1
+            except Exception:
+                # 读不到属性时保守按成功计，避免在异常状态下空转
+                selected += 1
         if selected >= count:
             break
 
-        # need more than what's loaded - scroll down anchored on a real
-        # visible tile (never a hardcoded coordinate - a hardcoded position
-        # can miss the panel entirely and scroll the underlying page instead)
-        anchor = tiles.last
-        box = anchor.bounding_box()
-        if not box:
-            break
-        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-        page.mouse.wheel(0, 400)
-        page.wait_for_timeout(700)
+        # 还不够，需要让素材库加载下一批。
+        #
+        # 这个库的真实行为（使用者手动操作确认）：一次只给 30 个（每行 5 个），
+        # 必须【滚到底】才会触发下一批，而且下一批要等【大约 10 秒】才出来。
+        #
+        # 原来的写法每轮只滚 400px、等 700ms，连续 4 轮数量没变就判定「素材不够
+        # 了」——总共只等了约 2.8 秒，远小于 10 秒。后果是从第二个计划起
+        # （去重让 skip=30，要拿第 31~60 个）永远等不到新素材：
+        #   while idx < min(cur_total=30, target_end=60)  →  while 30 < 30  →  假
+        # 一个都点不到，还误报「素材库里不够了」，而实际上素材是够的。
+        before = cur_total
+        _scroll_library_to_bottom(page, tiles)
 
-        new_total = checkboxes.count()
-        if new_total == cur_total:
-            stable_rounds += 1
-            if stable_rounds >= 4:
-                break  # reached the true end - genuinely not enough material
-        else:
+        def more_loaded():
+            return checkboxes.count() > before
+
+        if wait_until(page, more_loaded, timeout_seconds=25):
             stable_rounds = 0
+            continue
+
+        # 滚到底并等满 25 秒仍然没有新素材，再给一次机会；两轮都没有才认定真的没了
+        stable_rounds += 1
+        if stable_rounds >= 2:
+            break
 
     confirm_btn = page.get_by_role("button", name="添加创意素材", exact=True)
     robust_click(page, confirm_btn.first, timeout=10000)

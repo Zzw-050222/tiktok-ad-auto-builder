@@ -1,3 +1,6 @@
+import re
+
+
 def wait_adgroup_page_ready(page):
     page.get_by_text("广告组名称", exact=True).first.wait_for(state="visible", timeout=90000)
     page.wait_for_timeout(800)
@@ -136,13 +139,30 @@ def select_mini_game(page, mini_game_name: str, tt_mini_id: str):
     page.wait_for_timeout(1000)
 
 
+# TikTok 在这个输入框上做文案灰度：同一个账号、同一个位置的同一个框，不同次
+# 页面加载会随机拿到不同的 placeholder。2026-08-14 实测同一轮跑 3 个计划，抓到
+# 两种并存：
+#   '请输入一个值'                          <- 老文案
+#   '请您输入广告花费回报（ROAS）下限值'      <- 新文案
+# 只匹配其中一种就会随机失败（表现为「竞价策略区域一直没能加载出来」，因为这时
+# 那 4 个备选策略标签也不可见——目标ROAS 本来就已经是选中状态了）。用正则同时
+# 兼容两种，将来再改文案只要还带 ROAS 字样就仍然命中。
+_ROAS_PLACEHOLDER_RE = re.compile(r"请输入一个值|ROAS")
+
+# 页面上实际渲染的是「目标 ROAS」——中间有一个空格，而原来的 exact=True 匹配的是
+# 「目标ROAS」，实测 命中=0 vs 命中=5。这条兜底路径因此一直是死代码，只是以前
+# placeholder 能命中所以没暴露出来。用 \s* 兼容有无空格；必须锚定首尾，否则会误
+# 中「修改目标 ROAS」和「…所有广告组的目标 ROAS必须保持一致。」这类长句。
+_TARGET_ROAS_TEXT_RE = re.compile(r"^\s*目标\s*ROAS\s*$")
+
+
 def set_target_roas(page, roas_value):
     from src.pages.common import robust_click, wait_until
 
     other_labels = ["最高价值", "成本上限", "最高转化量", "最低成本"]
 
     def roas_input_ready():
-        loc = page.get_by_placeholder("请输入一个值")
+        loc = page.get_by_placeholder(_ROAS_PLACEHOLDER_RE)
         return loc if (loc.count() > 0 and loc.first.is_visible()) else None
 
     def find_visible_label():
@@ -169,8 +189,15 @@ def set_target_roas(page, roas_value):
         page.wait_for_timeout(500)
 
         def target_roas_visible():
-            loc = page.get_by_text("目标ROAS", exact=True)
-            return loc if (loc.count() > 0 and loc.first.is_visible()) else None
+            loc = page.get_by_text(_TARGET_ROAS_TEXT_RE)
+            if loc.count() == 0:
+                return None
+            # 多个元素文本都恰好是「目标 ROAS」（span / div / ks-text 各一份），
+            # 其中大部分尺寸为 0（藏在收起的下拉里），只有真正显示的那个能点。
+            for i in range(min(loc.count(), 12)):
+                if loc.nth(i).is_visible():
+                    return loc.nth(i)
+            return None
 
         target_roas_option = wait_until(page, target_roas_visible, timeout_seconds=60)
         if not target_roas_option:
@@ -193,48 +220,58 @@ def set_regions(page, region_id_name_pairs):
     encodes TikTok's exact location id - avoids fuzzy-text mis-clicks (e.g. a
     "巴西" search also surfacing "巴西兰迪亚, ..." rows with the same substring).
     """
-    from src.pages.common import click_to_open, dismiss_popups, robust_click
+    from src.pages.common import click_to_open, dismiss_popups, robust_click, wait_until
 
     dismiss_popups(page)
 
-    def locate_region_field():
-        f = page.get_by_placeholder("搜索或选择地域")
-        if f.count() == 0:
-            f = page.get_by_text("搜索或选择地域", exact=True)
-        return f
-
-    field = locate_region_field()
-    for _ in range(15):
-        if field.count() > 0:
-            break
-        page.mouse.wheel(0, 600)
-        page.wait_for_timeout(400)
-        field = locate_region_field()
-    field.first.wait_for(state="visible", timeout=10000)
-    field.first.scroll_into_view_if_needed(timeout=5000)
+    field = _wait_for_region_field(page)
+    if not field:
+        raise ValueError("地域选择框等了 60 秒还没出现（地域区块可能一直没渲染出来）")
+    field.scroll_into_view_if_needed(timeout=5000)
 
     search_input = page.locator('[data-testid="lego-antd-select-popover-content-input"]')
     failed = []
 
     for region_id, name in region_id_name_pairs:
         if search_input.count() == 0 or not search_input.first.is_visible():
-            field = locate_region_field()
-            click_to_open(field.first, timeout=10000)
+            field = _wait_for_region_field(page)
+            if not field:
+                failed.append((region_id, name))
+                continue
+            click_to_open(field, timeout=10000)
             page.wait_for_timeout(800)
-            search_input.wait_for(state="visible", timeout=10000)
+            try:
+                search_input.wait_for(state="visible", timeout=30000)
+            except Exception:
+                failed.append((region_id, name))
+                continue
 
         search_input.first.fill("")
         search_input.first.fill(name)
-        page.wait_for_timeout(1200)
 
+        # 原来是「填完等 1.2 秒，没结果就重填一次再等 1.8 秒」——最多约 4.5 秒。
+        # 2026-08-14 实测这不够：同一个「日本」搜索，一次搜不出来（本函数返回
+        # [('1861060','日本')] 导致上层报「没有任何地区被选中」），另一次同样的
+        # 输入却正常。这个平台会卡到接近一分钟（见 common.wait_until 的注释），
+        # 固定 sleep 是碰运气。改成 60 秒轮询等结果出现，中途重填一次搜索词。
         option = page.locator(f'[data-testid="lego-search-result-content-{region_id}"]')
-        if option.count() == 0:
-            page.wait_for_timeout(1500)
-            search_input.first.fill("")
-            search_input.first.fill(name)
-            page.wait_for_timeout(1800)
+        rounds = {"n": 0, "refilled": False}
 
-        if option.count() == 0:
+        def option_ready():
+            if option.count() > 0:
+                return option
+            rounds["n"] += 1
+            # 约 10 秒还没出结果，重填一次搜索词（有时输入没被组件接住）
+            if rounds["n"] == 20 and not rounds["refilled"]:
+                rounds["refilled"] = True
+                try:
+                    search_input.first.fill("")
+                    search_input.first.fill(name)
+                except Exception:
+                    pass
+            return None
+
+        if not wait_until(page, option_ready, timeout_seconds=60):
             failed.append((region_id, name))
             continue
 
@@ -247,26 +284,99 @@ def set_regions(page, region_id_name_pairs):
     return failed
 
 
+# 地域框的占位文案。TikTok 2026-08-14 当天把它从「搜索或选择地域」换成了
+# 「请搜索或选择定向区域。」（多了「请」、「地域」变「定向区域」、末尾还多个句号），
+# 同时在下面新增了「批量上传」按钮。旧文案当天已从页面上彻底消失。
+# 只留一个正则做兜底，主路径改用结构定位（见 _locate_region_field）。
+_REGION_PLACEHOLDER_RE = re.compile(r"^\s*请?搜索或选择(地域|定向区域)。?\s*$")
+
+# 地域框的结构定位。2026-08-14 抓到的真实层级：
+#   <div class="particleLocations-SLs03s">            ← 地域专属容器
+#     <div data-testid="lego-antd-select">            ← 真正可点击的下拉容器
+#       <ks-text-*>请搜索或选择定向区域。</ks-text-*>   ← 只是里面的文字
+#       <ks-icon-chevron-down>                        ← 箭头
+# 六次快照里 particleLocations-SLs03s 完全一致，data-testid 也一致，只有
+# <ks-text-*> 这类自定义元素的标签名是每次随机的。所以按容器定位最稳。
+# 注意 [class*="particleLocations-"] 不会误中同区块的
+# particleLocationsRelated-gI2MSJ（后者没有紧跟的连字符），这点是刻意的。
+_REGION_SELECT_CSS = '[class*="particleLocations-"] [data-testid="lego-antd-select"]'
+
+
 def _locate_region_field(page):
-    f = page.get_by_placeholder("搜索或选择地域")
+    """收起状态下可点击的地域下拉容器，按可靠性从高到低尝试三种方式。
+
+    以前只按占位文案找，而且找到的是文案那个 <ks-text-*> 文本元素本身——
+    既不稳（TikTok 一改文案就全盘失效，当天就发生了），点它也未必能展开下拉。
+    现在优先用结构定位，且返回的是下拉容器而不是里面的文字。
+    """
+    # ① 结构定位：不依赖任何文案，选中地区后占位文字消失也依然有效
+    f = page.locator(_REGION_SELECT_CSS)
+    if f.count() > 0:
+        return f
+
+    # ② 退一步：所有下拉容器里，文字命中地域占位文案的那个
+    f = page.locator('[data-testid="lego-antd-select"]').filter(
+        has_text=_REGION_PLACEHOLDER_RE
+    )
+    if f.count() > 0:
+        return f
+
+    # ③ 最后兜底：老界面的写法（input 的 placeholder，或纯文本元素）
+    f = page.get_by_placeholder(_REGION_PLACEHOLDER_RE)
     if f.count() == 0:
-        f = page.get_by_text("搜索或选择地域", exact=True)
+        f = page.get_by_text(_REGION_PLACEHOLDER_RE)
     return f
+
+
+def _wait_for_region_field(page, timeout_seconds=60):
+    """等地域框出现【并且可见】，最多等 timeout_seconds，返回那个可见元素或 None。
+
+    原来三处各写了一遍这样的逻辑：
+        field = _locate_region_field(page)
+        for _ in range(15):
+            if field.count() > 0: break        # ← 用「存在」判断跳出
+            page.mouse.wheel(0, 600); ...
+        field.first.wait_for(state="visible", timeout=10000)   # ← 用「可见」判断成功
+
+    两个判据不一致，2026-08-14 实测抓到两种翻车方式：
+      * 地域区块整个还没渲染出来（命中=0）：循环滚满 15 次约 9000px 直接到页底
+        （快照里输入框坐标都变成负数了），再花 10 秒等一个空定位器，必然超时；
+      * 文字匹配命中了隐藏副本（ROAS 那次证明这页面上同文本的隐藏副本很常见）：
+        立刻跳出循环、滚动一次都不执行，同样卡死在可见性等待上。
+    而这个平台本来就会卡到接近一分钟（见 common.wait_until 的注释），10 秒远不够。
+
+    改成：以【可见】为唯一判据，60 秒轮询。只在元素压根不在 DOM 里时才滚动
+    （懒加载才需要滚；Playwright 的 is_visible() 跟元素在不在可视区无关，
+    已经在 DOM 里的元素滚动帮不上忙），且滚动次数设上限，免得一路滚到页底。
+    """
+    from src.pages.common import wait_until
+
+    scrolls = {"n": 0}
+
+    def visible_field():
+        f = _locate_region_field(page)
+        n = f.count()
+        if n > 0:
+            for i in range(min(n, 10)):
+                if f.nth(i).is_visible():
+                    return f.nth(i)
+            return None
+        if scrolls["n"] < 15:
+            scrolls["n"] += 1
+            page.mouse.wheel(0, 600)
+        return None
+
+    return wait_until(page, visible_field, timeout_seconds=timeout_seconds)
 
 
 def _select_all_available_regions_once(page):
     from src.pages.common import click_to_open, robust_click
 
-    field = _locate_region_field(page)
-    for _ in range(15):
-        if field.count() > 0:
-            break
-        page.mouse.wheel(0, 600)
-        page.wait_for_timeout(400)
-        field = _locate_region_field(page)
-    field.first.wait_for(state="visible", timeout=10000)
-    field.first.scroll_into_view_if_needed(timeout=5000)
-    click_to_open(field.first, timeout=10000)
+    field = _wait_for_region_field(page)
+    if not field:
+        raise ValueError("地域选择框等了 60 秒还没出现（地域区块可能一直没渲染出来）")
+    field.scroll_into_view_if_needed(timeout=5000)
+    click_to_open(field, timeout=10000)
     page.wait_for_timeout(1000)
 
     # the list needs a moment to refresh to the newly-selected mini game's actual
@@ -318,16 +428,11 @@ def _select_all_available_regions_except_once(page, excluded_ids):
     missing_ids = [rid for rid in excluded_ids if str(rid) not in region_map]
     excluded_names = {rid: region_map[str(rid)] for rid in excluded_ids if str(rid) in region_map}
 
-    field = _locate_region_field(page)
-    for _ in range(15):
-        if field.count() > 0:
-            break
-        page.mouse.wheel(0, 600)
-        page.wait_for_timeout(400)
-        field = _locate_region_field(page)
-    field.first.wait_for(state="visible", timeout=10000)
-    field.first.scroll_into_view_if_needed(timeout=5000)
-    click_to_open(field.first, timeout=10000)
+    field = _wait_for_region_field(page)
+    if not field:
+        raise ValueError("地域选择框等了 60 秒还没出现（地域区块可能一直没渲染出来）")
+    field.scroll_into_view_if_needed(timeout=5000)
+    click_to_open(field, timeout=10000)
     page.wait_for_timeout(1000)
 
     def list_ready():
