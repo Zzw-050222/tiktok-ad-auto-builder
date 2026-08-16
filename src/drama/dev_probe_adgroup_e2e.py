@@ -3,7 +3,7 @@
 流程：
     确保中文 -> 选「TikTok 即时增长」-> 打开商品库开关 -> 填计划名和预算 -> 继续
     -> 广告组名 -> 选商品库（唯一可见）-> 特定剧集（切ID维度、搜、点圆圈、验证、添加）
-    -> 选 TikTok Mini -> 目标 ROAS -> 地域 -> 继续
+    -> 选 TikTok Mini -> 目标 ROAS -> 地域 -> 继续 -> 广告层选创意素材
 
 短剧从计划名里用最长前缀匹配推出（见 src/drama/series_lookup.py）。
 地域和 ROAS 直接复用小游戏那套，操作一模一样。
@@ -29,6 +29,7 @@ from src.drama.pages.adgroup_page import (
     select_target_roas_drama,
     select_tiktok_mini,
 )
+from src.drama.pages.ad_page import select_drama_creatives
 from src.drama.pages.campaign_page import enable_catalog_campaign, ensure_chinese_ui
 from src.drama.series_lookup import load_series_map, resolve_series_from_campaign_name
 from src.pages.adgroup_page import set_regions
@@ -69,6 +70,9 @@ def load_first_row(path):
 
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "短剧-excel.xlsx"
+    # 可选：第二个参数覆盖素材搜索词。正式跑用剧名，但有些剧还没上素材，
+    # 测试时可以指定一个库里确实有素材的剧名来验证选素材这段流程。
+    search_override = sys.argv[2].strip() if len(sys.argv) > 2 else None
     d = load_first_row(path)
 
     advertiser_id = str(d["Advertiser ID"]).strip()
@@ -79,6 +83,7 @@ def main():
     region_raw = str(d["Region"]).strip()
     tt_mini_id = str(d.get("TT Mini ID") or "").strip()
     mini_name = str(d.get("Mini Game Name") or "").strip()
+    creative_count = int(d.get("Creative Number") or 1)
 
     name_to_id, _ = load_series_map()
     series_name, series_id = resolve_series_from_campaign_name(campaign_name, name_to_id)
@@ -88,7 +93,7 @@ def main():
     L(f"  计划名   = {campaign_name}")
     L(f"  广告组名 = {ad_group_name[:60]}")
     L(f"  短剧     = {series_name!r} -> {series_id}   （从计划名最长前缀匹配得出）")
-    L(f"  预算={budget}  ROAS={roas}  地域={region_raw}")
+    L(f"  预算={budget}  ROAS={roas}  地域={region_raw}  素材数={creative_count}")
     L("  publish=False，只搭草稿不发布\n")
 
     region_pairs, missing = resolve_regions(region_raw)
@@ -179,10 +184,20 @@ def main():
             L(f"          -> 未选中的地区: {failed if failed else '无'}")
             shot(page, "05_regions")
 
-            mark("继续（到广告层为止，不发布）")
+            mark("继续 -> 广告层")
             continue_step(page)
             page.wait_for_timeout(3000)
             shot(page, "06_after_continue")
+
+            search_term = search_override or series_name
+            mark(f"选创意素材：搜 {search_term!r}，挑 {creative_count} 个"
+                 + ("（命令行覆盖了搜索词）" if search_override else ""))
+            used = set()
+            picked, wrapped = select_drama_creatives(
+                page, search_term, creative_count, used_ids=used)
+            L(f"          -> 选中 {picked} 个"
+              + ("（素材不够，绕回头复用过）" if wrapped else ""))
+            shot(page, "07_creatives")
 
             L(f"\n{'=' * 60}\n✓ 广告组层全流程跑通\n{'=' * 60}")
 
