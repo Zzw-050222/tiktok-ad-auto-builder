@@ -51,18 +51,7 @@ def ensure_chinese_ui(page, advertiser_id, attempts=4):
     url = f"{DASHBOARD_URL}?aadvid={advertiser_id}"
     seen = []
     for attempt in range(attempts):
-        if attempt == 0:
-            page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        else:
-            # 交替用「硬重载」和「重新导航」——两者触发的加载路径不同，实测语言是
-            # 在两种状态间随机落定的，换一种方式往往就回到中文
-            try:
-                if attempt % 2 == 1:
-                    page.reload(wait_until="domcontentloaded", timeout=60000)
-                else:
-                    page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            except Exception:
-                page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
         lang = wait_until(page, lambda: _ui_language(page), timeout_seconds=45)
         seen.append(lang)
@@ -75,16 +64,28 @@ def ensure_chinese_ui(page, advertiser_id, attempts=4):
                 "（无权限时 TikTok 会跳到 /i18n/forbidden）。"
                 f"当前地址: {page.url[:100]}"
             )
-        page.wait_for_timeout(2500)
+
+        # 是英文 —— 去 /i18n/home 把语言切回中文再回来。
+        # 这一步不能省：实测这个账号的语言【会自己弹回英文】，切过一次不代表下次还是
+        # 中文，所以每次跑之前都要确认并在需要时切回来，而不是让人手动兜底。
+        from src.drama.set_language import switch_to_chinese
+
+        ok = switch_to_chinese(page, verbose=False)
+        if not ok:
+            raise ValueError(
+                "Ads Manager 是英文界面，尝试自动切换成中文也失败了。\n"
+                "语言按钮的定位是 .ac-lang-avater__lang-btn（在 /i18n/home 右上角，"
+                "显示的是【当前】语言，所以不能按文字找）。\n"
+                "请手动在那里切成「中文（简体）」后重跑。"
+            )
+        page.wait_for_timeout(1500)
 
     raise ValueError(
-        f"Ads Manager 连续 {attempts} 次都是英文界面（每次检测结果: {seen}）。\n"
+        f"Ads Manager 连续 {attempts} 次都是英文界面（每次检测结果: {seen}），"
+        "中间已经尝试过自动切换语言。\n"
         "整套定位都依赖中文文案，英文界面下每一步都会失败，所以在这里就停住，"
         "而不是带着错误语言往下跑、产生一堆莫名其妙的超时。\n"
-        "注意：账户设置里的语言【已经是中文】也可能出现这种情况——实测 /i18n/home "
-        "右上角显示「中文（简体）」时，Ads Manager 仍然可能渲染英文，所以去设置里"
-        "改语言未必有用。\n"
-        "处理办法：手动在浏览器里打开这个广告主的后台，确认界面是中文后再重跑。"
+        "请手动在 /i18n/home 右上角把语言切成「中文（简体）」后重跑。"
     )
 
 

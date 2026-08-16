@@ -24,3 +24,7 @@ src/dev_click_create.py
 src/dev_test_*.py
 src/dev_set_language.py
 src/dev_probe.py
+
+# 短剧真实业务数据 —— 不能进公开仓库
+短剧-excel.xlsx
+商品库-剧目.xlsx
