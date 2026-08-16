@@ -1,5 +1,6 @@
 venv/
 browser_profile/
+browser_profile_drama/
 .env
 __pycache__/
 *.pyc
