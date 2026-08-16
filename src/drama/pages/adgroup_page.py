@@ -54,6 +54,85 @@ def _is_selected(el):
     return None
 
 
+
+def _scroll_into_comfortable_view(page, locator, tries=14, label=""):
+    """真的把元素滚进视口中部；滚不动就换 JS 滚它最近的可滚动祖先。
+
+    踩过的两个坑，都会表现为【页面根本不动】：
+      1) bounding_box() 对 shadow DOM 里的 <slot> 返回 None。slot 自身不渲染，
+         只有被它分配的节点才有盒子。拿不到坐标就 return，滚动一次都没发生——
+         使用者在旁边看着浏览器说「每次选完剧集都没看到页面滚动」，就是这个。
+         所以这里拿不到盒子时，往上找有真实盒子的祖先。
+      2) _first_visible 只看 getBoundingClientRect 非零，【屏幕外的元素照样算可见】，
+         于是「找不到才滚」的写法永远不触发滚动。调用方必须无条件调用本函数。
+
+    另外 mouse.wheel 是滚【鼠标底下】那个容器，所以先把鼠标移到表单区域中间；
+    真滚不动（内层容器吃掉滚动）时退回直接设最近可滚动祖先的 scrollTop。
+    """
+    try:
+        vh = page.viewport_size["height"]
+    except Exception:
+        vh = 1000
+    top_safe, bottom_safe = 170, vh - 230      # 避开顶部导航和底部固定操作栏
+    target_y = (top_safe + bottom_safe) // 2
+
+    def rect():
+        """取真实盒子：自己没有（slot）就往上找祖先。"""
+        try:
+            return locator.evaluate("""el => {
+              let n = el;
+              for (let k = 0; k < 6 && n; k++) {
+                const r = n.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0)
+                  return {y: r.y, h: r.height, x: r.x, w: r.width};
+                n = n.parentElement;
+              }
+              return null;
+            }""")
+        except Exception:
+            return None
+
+    try:
+        page.mouse.move(800, 500)              # wheel 滚的是鼠标底下的容器
+    except Exception:
+        pass
+
+    last_y = None
+    for _ in range(tries):
+        r = rect()
+        if not r:
+            return False
+        y = r["y"] + r["h"] / 2
+        if top_safe <= y <= bottom_safe:
+            return True
+
+        if last_y is not None and abs(y - last_y) < 3:
+            # 滚了但没动 —— 内层可滚动容器吃掉了滚轮，改成直接设 scrollTop
+            try:
+                locator.evaluate("""(el, dy) => {
+                  let n = el;
+                  while (n) {
+                    const st = getComputedStyle(n);
+                    if (n.scrollHeight > n.clientHeight + 4 &&
+                        /auto|scroll/.test(st.overflowY)) { n.scrollTop += dy; return; }
+                    n = n.parentElement;
+                  }
+                  window.scrollBy(0, dy);
+                }""", int(y - target_y))
+                page.wait_for_timeout(400)
+            except Exception:
+                pass
+            last_y = None
+            continue
+
+        last_y = y
+        page.mouse.wheel(0, int(y - target_y))
+        page.wait_for_timeout(350)
+
+    r = rect()
+    return bool(r and top_safe <= r["y"] <= bottom_safe)
+
+
 def _first_visible(loc, limit=12):
     """一批匹配里挑出真正可见的那一个。这个后台到处是同文本的隐藏副本，
     盲取 .first 是今天反复踩到的坑。"""
@@ -524,74 +603,301 @@ def _find_mini_select(page):
     return (loc.first, r.get("text", "")) if loc.count() > 0 else (None, None)
 
 
-def select_tiktok_mini(page, tt_mini_id=None, timeout_seconds=60):
-    """选「短剧」区块里那个 TikTok Mini。
 
-    按【TT Mini ID】精确匹配，和商品库、剧集同一套路。实测下拉展开后每一项长这样：
-        We Shorts
-        短剧 | ID: mnk980l0ef79v57q      <- 这个 ID 就是表里的 TT Mini ID
-        有效
-    所以不用「点第一个可见项」——那种写法在账号下多一个 Mini 时就会静默选错，
-    而这个后台今天已经反复证明「同类元素不止一个」是常态。
-    tt_mini_id 为空时才退回选唯一可见项，并且发现多于一个就报错。
+
+# 把页面上所有 ks 选择器列出来（含各自的标签和真实显示文字），用于
+#   ① 找到该点的那个 TikTok Mini 框
+#   ② 验证到底选中了没
+#
+# 为什么不再用「找标题恰好是『短剧』的 lego-section-item」：实测那样标记到的不是
+# 使用者截图里显示 We Shorts 的那个框，而是另一个显示「无法使用此 TikTok Mini…」的
+# 元素，导致【明明选中了却判定失败】。页面上「短剧」这两个字至少出现三处（优化位置
+# 的值、短剧字段的标签、左栏计划名），靠标题文字锚定不可靠。
+#
+# deepText 用【组合树】遍历，这是上一版报错文字里同一句出现两遍的原因：
+# 老写法对有 shadowRoot 的宿主同时走 shadowRoot 和 childNodes，被 slot 分配的
+# 光 DOM 内容就被数了两遍。正确做法是遇到 <slot> 走 assignedNodes()，
+# 遇到 shadowRoot 就【只】走 shadow 树。
+# 读一个元素的显示文字，会走进它自己的 shadow root。
+#
+# 注意分工：【找元素】必须用 Playwright 定位器，【读文字】才用这段 JS。
+# document.querySelectorAll 穿不透 shadow DOM——上一版整个清单用原生 JS 扫，
+# 结果「页面上 0 个选择器」，而同一时刻 get_by_text 明明能找到那段占位文字。
+# Playwright 的 CSS 引擎会穿透 shadow root，所以用它找；找到之后在元素上
+# evaluate 是可以正常访问该元素自己的 shadowRoot 的。
+#
+# 遍历用【组合树】：遇到 <slot> 走 assignedNodes()，遇到 shadowRoot 就只走 shadow 树。
+# 老写法对有 shadowRoot 的宿主同时走 shadowRoot 和 childNodes，被 slot 分配的内容
+# 会被数两遍——报错信息里「无法使用此 TikTok Mini」出现两次就是这么来的。
+_DEEP_TEXT_JS = """
+el => {
+  let out = '';
+  const walk = (n) => {
+    if (!n) return;
+    if (n.nodeType === 3) { out += n.textContent; return; }
+    if (n.tagName === 'SLOT') { for (const a of n.assignedNodes()) walk(a); return; }
+    if (n.shadowRoot) { walk(n.shadowRoot); return; }
+    for (const c of n.childNodes || []) walk(c);
+  };
+  walk(el);
+  return out.replace(/\s+/g, ' ').trim();
+}
+"""
+
+# 主表单上的选择器控件。ks-* 这套用在主表单，vi-* 那套用在弹层里，别混用。
+_SELECTOR_CSS = 'ks-input-selector, [data-testid^="KsSelect"]'
+
+
+def _mini_inventory(page, limit=40):
+    """列出主表单上所有可见的选择器：[{i, text, y, h}]。
+
+    出错【不吞异常】——上一版 try/except 直接 return []，把「JS 报错」和
+    「页面上真的没有」混为一谈，白跑了一轮才发现清单是空的。
+    """
+    out = []
+    loc = page.locator(_SELECTOR_CSS)
+    try:
+        n = loc.count()
+    except Exception as e:
+        print(f"          [mini] 数选择器出错: {type(e).__name__}: {str(e)[:80]}",
+              flush=True)
+        return out
+    for i in range(min(n, limit)):
+        el = loc.nth(i)
+        try:
+            if not el.is_visible():
+                continue
+            box = el.bounding_box()
+            text = el.evaluate(_DEEP_TEXT_JS) or ""
+        except Exception:
+            continue
+        out.append({
+            "i": i,
+            "text": text[:80],
+            "y": round(box["y"]) if box else None,
+            "h": round(box["height"]) if box else None,
+        })
+    return out
+
+
+def _sel_locator(page, i):
+    return page.locator(_SELECTOR_CSS).nth(i)
+
+
+def _mini_is_selected(page, mini_name=None, tt_mini_id=None):
+    """选中判据：占位文字「选择 TikTok Mini」消失，且 Mini 名字出现在页面上。
+
+    刻意【不】按组件类型去读某个框的文字。实测整页只有两个
+    ks-input-selector/KsSelect，一个在排期区（显示「刷新新增」）、一个是空的——
+    Mini 框根本不属于这类组件。上一版按组件类型挑「靠下那个」，结果点到排期区去了。
+
+    也不能只看「名字出现了」：下拉展开时选项本身就写着 We Shorts。所以要求
+    占位文字同时消失——选中后框里显示的就是 Mini 名字，占位文字会被替换掉。
+    """
+    name = (mini_name or "").strip()
+    placeholder_gone = _first_visible(
+        page.get_by_text(MINI_PLACEHOLDER, exact=True)) is None
+    if not name:
+        return placeholder_gone
+    shown = _first_visible(page.get_by_text(name, exact=True)) is not None
+    return placeholder_gone and shown
+
+
+def _option_row_of(page, text_locator):
+    """给定下拉选项里的某个文字元素，往上找到整行（可点击的那一层）。
+
+    和剧集那边 _episode_row_radio 同一个套路：这个后台的下拉项，文字节点本身往往
+    不是可点击的目标，点它不会落到选项上。
+    """
+    js = """
+    el => {
+      document.querySelectorAll('[data-drama-opt]').forEach(e => e.removeAttribute('data-drama-opt'));
+      let n = el;
+      for (let k = 0; k < 8 && n; k++) {
+        n = n.parentElement;
+        if (!n) break;
+        const r = n.getBoundingClientRect();
+        // 选项整行：足够宽、且不是整个下拉容器
+        if (r.width > 200 && r.height >= 30 && r.height < 140) {
+          n.setAttribute('data-drama-opt', '1');
+          return true;
+        }
+      }
+      return false;
+    }
+    """
+    try:
+        ok = text_locator.evaluate(js)
+    except Exception:
+        ok = False
+    if not ok:
+        return None
+    loc = page.locator('[data-drama-opt="1"]')
+    return loc.first if loc.count() > 0 else None
+
+
+
+def _mini_text_is_selected(text, tt_mini_id=None):
+    """判断 TikTok Mini 选择器显示的文字是否代表【真的选中了】。
+
+    只看「非空」是不够的——TikTok 会把错误提示也渲染在这个框里：
+        无法使用此 TikTok Mini。可能是你的账号权限存在问题，或未满足某些使用要求。
+    这类文字非空、也可能包含 Mini 的 ID，所以必须显式排除。
+    """
+    if not text or not text.strip():
+        return False
+    t = text.strip()
+    for bad in ("无法使用", "权限", "未满足", "选择 TikTok Mini"):
+        if bad in t:
+            return False
+    if tt_mini_id:
+        return str(tt_mini_id).strip() in t
+    return True
+
+
+def select_tiktok_mini(page, tt_mini_id=None, mini_name=None, timeout_seconds=90):
+    """选「短剧」区块下面那个 TikTok Mini。
+
+    使用者演示的操作就三步，也是实测唯一走通过的一条路：
+        往下滑到「短剧」-> 点「选择 TikTok Mini」这段文字 -> 点列表里的 Mini 名字
+
+    走过的弯路，别再回去：
+      * 按组件类型定位（ks-input-selector / KsSelect）——整页只有两个这类元素，
+        一个在排期区显示「刷新新增」、一个是空的，Mini 框不属于这类组件。
+        按类型挑「靠下那个」会点到排期区。
+      * 用 document.querySelectorAll 扫元素——穿不透 shadow DOM，扫出 0 个。
+        Playwright 的定位器会穿透，所以【找元素一律用定位器】。
+
+    真正坏过的是【验证】不是点击：占位文字是 shadow root 里的 <slot>，
+    bounding_box() 返回 None，导致滚动函数直接放弃、页面一次都没滚过；
+    验证又死盯错误的元素，把已经选上的 We Shorts 判成失败。
+    """
+    from src.pages.common import robust_click, wait_until
+
+    name = (mini_name or "").strip()
+    mid = (tt_mini_id or "").strip()
+
+    def state():
+        ph = _first_visible(page.get_by_text(MINI_PLACEHOLDER, exact=True))
+        nm = _first_visible(page.get_by_text(name, exact=True)) if name else None
+        return ph, nm
+
+    if _mini_is_selected(page, name, mid):
+        return
+
+    for attempt in range(3):
+        # ① 找占位文字。Playwright 的 get_by_text 能穿透 shadow DOM。
+        anchor = wait_until(
+            page,
+            lambda: _first_visible(page.get_by_text(MINI_PLACEHOLDER, exact=True)),
+            timeout_seconds=25,
+        )
+        if anchor is None:
+            if _mini_is_selected(page, name, mid):
+                return
+            print(f"          [mini] 第{attempt + 1}轮：没找到「{MINI_PLACEHOLDER}」",
+                  flush=True)
+            page.wait_for_timeout(2000)
+            continue
+
+        # ② 无条件滚进视野。屏幕外的元素在 _first_visible 眼里也算「可见」，
+        #    所以绝不能写成「找不到才滚」——那样一次都不会滚。
+        ok = _scroll_into_comfortable_view(page, anchor)
+        print(f"          [mini] 第{attempt + 1}轮：滚动到位={ok}", flush=True)
+        page.wait_for_timeout(400)
+
+        # ③ 点这段文字，展开列表
+        robust_click(page, anchor, timeout=8000)
+        page.wait_for_timeout(2000)
+
+        # ④ 点列表里的 Mini 名字
+        def find_option():
+            if name:
+                t = _first_visible(page.get_by_text(name, exact=True))
+                if t is not None:
+                    return t
+            if mid:
+                return _first_visible(page.locator(f"text=/{re.escape(mid)}/"))
+            return None
+
+        target = wait_until(page, find_option, timeout_seconds=15)
+        if target is None:
+            print(f"          [mini] 下拉里没找到 {name!r}，重试", flush=True)
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(1000)
+            continue
+
+        row = _option_row_of(page, target) or target
+        robust_click(page, row, timeout=8000)
+        page.wait_for_timeout(2500)
+
+        if wait_until(page, lambda: _mini_is_selected(page, name, mid),
+                      timeout_seconds=25):
+            print(f"          [mini] 已选中 {name!r}", flush=True)
+            return
+        ph, nm = state()
+        print(f"          [mini] 还没选上：占位文字还在={ph is not None} "
+              f"{name!r}可见={nm is not None}", flush=True)
+        page.wait_for_timeout(1500)
+
+    raise ValueError(
+        f"选 TikTok Mini 失败：点了 3 轮，占位文字「{MINI_PLACEHOLDER}」仍在页面上。"
+        "\n注意：「无法使用此 TikTok Mini…」是【未选中】时的默认提示，不代表平台拒绝。"
+    )
+
+
+# 短剧的 ROAS 输入框。实测 placeholder 是「请您输入广告花费回报（ROAS）下限值」，
+# 但小游戏那边同一个框还出现过「请输入一个值」（TikTok 在做文案灰度），所以用正则
+# 兼容两种，只要带 ROAS 字样或是那句老文案都认。
+_DRAMA_ROAS_PLACEHOLDER_RE = re.compile(r"ROAS|请输入一个值")
+
+
+def select_target_roas_drama(page, roas_value, timeout_seconds=150):
+    """填短剧广告组的目标 ROAS。
+
+    刻意【不】复用小游戏那套 set_target_roas。两页的出价区块结构不同：
+      * 小游戏：竞价策略可选，找不到 ROAS 输入框时要点开下拉去选「目标 ROAS」
+      * 短剧  ：竞价策略是「最高价值」且标着【共享设置】，页面上根本没有
+                「目标 ROAS」这个选项——小游戏那套会一路走到「点开竞价策略下拉框后
+                没有找到'目标ROAS'这个选项」然后报错
+    使用者的说法也印证了：默认界面上就有那个框，点一下填进去就行。
+
+    等待时间给到 150 秒（而不是常用的 60 秒）：这个框是【选完 TikTok Mini 之后才
+    出现】的，实测从选完到出现可能要一分半。等不够就会误判成「没有这个框」。
     """
     from src.pages.common import wait_until
 
-    def ready():
-        s2, t2 = _find_mini_select(page)
-        return (s2, t2) if s2 is not None else None
+    def roas_input():
+        loc = page.get_by_placeholder(_DRAMA_ROAS_PLACEHOLDER_RE)
+        return _first_visible(loc)
 
-    got = wait_until(page, ready, timeout_seconds=timeout_seconds)
-    if not got:
+    box = wait_until(page, roas_input, timeout_seconds=timeout_seconds)
+    if not box:
         raise ValueError(
-            f"等了 {timeout_seconds} 秒没找到「短剧」区块里的 TikTok Mini 选择器"
-            "（按标题恰好是「短剧」的 lego-section-item 找的）"
+            f"等了 {timeout_seconds} 秒没等到 ROAS 输入框。"
+            "这个框是选完 TikTok Mini 之后才出现的——先确认 Mini 真的选中了"
+            "（选择器显示「无法使用此 TikTok Mini」时也算没选中）。"
         )
-    sel, before_text = got
-    if before_text and before_text.strip():
-        return   # 已经选好了，别再动
 
-    for attempt in range(3):
-        sel.scroll_into_view_if_needed(timeout=5000)
-        try:
-            sel.click(timeout=8000)
-        except Exception:
-            pass
-        page.wait_for_timeout(2000)
+    # 使用者演示：点「请输入广告花费…」这段文字就能输入。先滚过去再点再填——
+    # 这一块在页面很下面，不主动滚可能点不到实处。
+    _scroll_into_comfortable_view(page, box)
+    page.wait_for_timeout(400)
+    try:
+        from src.pages.common import robust_click as _rc
+        _rc(page, box, timeout=8000)
+    except Exception:
+        pass
+    box.fill("")
+    box.fill(str(roas_value))
+    page.wait_for_timeout(600)
 
-        if tt_mini_id:
-            want = str(tt_mini_id).strip()
-            opt = _first_visible(page.locator(f"text=/ID[:：]\\s*{re.escape(want)}/"))
-            if not opt:
-                page.wait_for_timeout(1500)
-                continue
-        else:
-            ids = page.locator(r"text=/ID[:：]\s*[a-z0-9]{10,}/")
-            vis = [i for i in range(min(ids.count(), 10))
-                   if _safe_visible(ids.nth(i))]
-            if not vis:
-                page.wait_for_timeout(1500)
-                continue
-            if len(vis) > 1:
-                raise ValueError(
-                    f"没有指定 TT Mini ID，但下拉里有 {len(vis)} 个可见候选，"
-                    "这时候挑哪个都可能选错，请在表里填 TT Mini ID。"
-                )
-            opt = ids.nth(vis[0])
-
-        opt.scroll_into_view_if_needed(timeout=5000)
-        opt.click(timeout=10000)
-        page.wait_for_timeout(2000)
-
-        def picked():
-            _, t = _find_mini_select(page)
-            return bool(t and t.strip())
-
-        if wait_until(page, picked, timeout_seconds=10):
-            return
-
-    _, t = _find_mini_select(page)
-    raise ValueError(
-        f"选 TikTok Mini 失败：点完之后选择器显示的仍是 {t!r}。"
-        + (f"（要找的是 ID {tt_mini_id!r}）" if tt_mini_id else "")
-    )
+    # 回读确认。这个页面上输入框不止一个，填错地方不会报错。
+    try:
+        got = (box.input_value(timeout=3000) or "").strip()
+        if got != str(roas_value).strip():
+            raise ValueError(f"ROAS 填完读回的是 {got!r}，期望 {roas_value!r}")
+    except ValueError:
+        raise
+    except Exception:
+        pass

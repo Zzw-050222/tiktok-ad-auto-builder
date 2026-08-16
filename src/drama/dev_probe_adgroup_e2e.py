@@ -26,11 +26,12 @@ from src.drama.pages.adgroup_page import (
     add_specific_episode,
     fill_ad_group_name,
     select_product_catalog,
+    select_target_roas_drama,
     select_tiktok_mini,
 )
 from src.drama.pages.campaign_page import enable_catalog_campaign, ensure_chinese_ui
 from src.drama.series_lookup import load_series_map, resolve_series_from_campaign_name
-from src.pages.adgroup_page import set_regions, set_target_roas
+from src.pages.adgroup_page import set_regions
 from src.pages.campaign_page import (
     continue_step,
     fill_campaign_details,
@@ -77,6 +78,7 @@ def main():
     roas = d["roas_bid"]
     region_raw = str(d["Region"]).strip()
     tt_mini_id = str(d.get("TT Mini ID") or "").strip()
+    mini_name = str(d.get("Mini Game Name") or "").strip()
 
     name_to_id, _ = load_series_map()
     series_name, series_id = resolve_series_from_campaign_name(campaign_name, name_to_id)
@@ -145,12 +147,32 @@ def main():
             add_specific_episode(page, series_id=series_id, series_name=series_name)
             shot(page, "03_episode")
 
-            mark(f"选 TikTok Mini（ID {tt_mini_id}）")
-            select_tiktok_mini(page, tt_mini_id=tt_mini_id)
+            mark(f"选 TikTok Mini（{mini_name} / {tt_mini_id}）")
+            select_tiktok_mini(page, tt_mini_id=tt_mini_id, mini_name=mini_name)
+            from src.drama.pages.adgroup_page import _mini_is_selected
+            L(f"          -> Mini 选中确认: {_mini_is_selected(page, mini_name, tt_mini_id)}")
+            # 同时看看「优化目标」和「选择价值类型」有没有跟着联动
+            state = page.evaluate("""() => {
+              const deep = (n) => { let s=''; const w=(x)=>{ if(!x)return;
+                if(x.nodeType===3){s+=x.textContent;return;}
+                if(x.shadowRoot)w(x.shadowRoot);
+                for(const c of x.childNodes||[])w(c); }; w(n);
+                return s.replace(/\\s+/g,' ').trim(); };
+              const sv = (title) => {
+                for (const sec of document.querySelectorAll('[data-testid="lego-section-item"]')) {
+                  const h = sec.querySelector('[data-testid="lego-section-item-header"]');
+                  if (!h || (h.innerText||'').trim().split('\\n')[0].trim() !== title) continue;
+                  const c = sec.querySelector('[data-testid="lego-section-item-content"]');
+                  if (c) return deep(c).slice(0, 40);
+                }
+                return null; };
+              return {goal: sv('优化目标'), vt: sv('选择价值类型')};
+            }""")
+            L(f"          -> 优化目标={state['goal']!r} 选择价值类型={state['vt']!r}")
             shot(page, "04_mini")
 
             mark(f"填目标 ROAS = {roas}")
-            set_target_roas(page, roas)
+            select_target_roas_drama(page, roas)
 
             mark(f"选地域 {region_pairs}")
             failed = set_regions(page, region_pairs)
