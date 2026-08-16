@@ -17,15 +17,34 @@ def start_new_campaign(page, advertiser_id: str):
 def select_native_growth_objective(page):
     from src.pages.common import wait_until
 
-    radio_text = page.get_by_text("TikTok 即时增长", exact=True).first
-    radio_text.wait_for(state="visible", timeout=15000)
-
     def details_visible():
         loc = page.get_by_text("推广系列详情", exact=True)
         return loc if (loc.count() > 0 and loc.first.is_visible()) else None
 
+    def visible_radio():
+        # 沿用 exact=True 的字符串匹配——它是实测能命中的，不要换成正则。
+        # 唯一的改动是【不再盲取 .first】：本函数原有的注释就写了「有账号存在悬浮
+        # 预览面板复制了这个标签」，一旦 .first 恰好是那个隐藏副本，就会死等到超时，
+        # 而页面上明明有一个可见的。遍历所有匹配挑出真正可见的那一个。
+        loc = page.get_by_text("TikTok 即时增长", exact=True)
+        for i in range(min(loc.count(), 12)):
+            if loc.nth(i).is_visible():
+                return loc.nth(i)
+        return None
+
+    # 15 秒 -> 60 秒：这个平台会卡到接近一分钟（见 common.wait_until 的注释），
+    # 项目里别处早就统一成 60 秒了，这里是漏网的一处。
+    #
+    # 注意这里【刻意不调用 dismiss_popups】：它会点击任何可见的「关闭」按钮，而在
+    # 推广目标这一页上「关闭」是关掉整个创建面板的，一点就把要选的内容关没了
+    # （2026-08-14 亲手踩过）。也刻意用普通 .click() 而不是 robust_click：单选项要的
+    # 是真实点击，robust_click 会升级到 JS 直接派发，对单选项不如真实点击可靠。
     for attempt in range(5):
-        radio_text.click(timeout=10000)
+        radio = wait_until(page, visible_radio,
+                           timeout_seconds=60 if attempt == 0 else 20)
+        if not radio:
+            raise TimeoutError("等了 60 秒还没看到可见的「TikTok 即时增长」推广目标")
+        radio.click(timeout=10000)
         if wait_until(page, details_visible, timeout_seconds=12):
             break
         if attempt == 4:
@@ -50,8 +69,11 @@ def fill_campaign_details(page, campaign_name: str, daily_budget):
     """
     from src.pages.common import wait_until
 
+    # 15 秒 -> 60 秒：与项目里其它地方统一（见 common.wait_until 的注释，这个平台
+    # 会卡到接近一分钟）。注意下面 budget_radio_visible 的 10 秒是【刻意】的短超时，
+    # 用来区分「这个账号类型压根没有预算区」和「还在加载」，别跟着一起改。
     name_input = _input_after_label(page, "推广系列名称")
-    name_input.wait_for(state="visible", timeout=15000)
+    name_input.wait_for(state="visible", timeout=60000)
     name_input.fill("")
     name_input.fill(campaign_name)
 
@@ -71,7 +93,7 @@ def fill_campaign_details(page, campaign_name: str, daily_budget):
     page.wait_for_timeout(300)
 
     budget_input = page.get_by_placeholder("20.00 以上")
-    budget_input.wait_for(state="visible", timeout=15000)
+    budget_input.wait_for(state="visible", timeout=60000)
     budget_input.fill(str(daily_budget))
     page.wait_for_timeout(500)
     return True
@@ -106,7 +128,8 @@ def add_new_ad_group(page, campaign_name: str):
 
 
 def continue_step(page):
+    # 15 秒 -> 60 秒：同上，与项目里其它地方统一
     btn = page.get_by_role("button", name="继续", exact=True)
-    btn.wait_for(state="visible", timeout=15000)
+    btn.wait_for(state="visible", timeout=60000)
     btn.click(timeout=10000)
     page.wait_for_timeout(3000)

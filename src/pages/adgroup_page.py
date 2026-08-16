@@ -7,8 +7,9 @@ def wait_adgroup_page_ready(page):
 
 
 def fill_ad_group_name(page, ad_group_name: str):
+    # 15 秒 -> 60 秒：同上，与项目里其它地方统一
     name_input = page.locator('input[type="text"]:visible').first
-    name_input.wait_for(state="visible", timeout=15000)
+    name_input.wait_for(state="visible", timeout=60000)
     name_input.fill("")
     name_input.fill(ad_group_name)
     page.wait_for_timeout(300)

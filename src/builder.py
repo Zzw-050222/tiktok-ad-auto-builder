@@ -105,11 +105,18 @@ def _creative_count_for(rec):
 
 def fill_ad_core(page, rec, advertiser_id, creative_usage):
     """creative_usage: dict shared across an entire run (NOT per-campaign),
-    keyed by (advertiser_id, tt_mini_id) -> how many search results have
-    already been used - so multiple campaigns targeting the same mini game on
-    the same account pick different materials instead of all reusing the
-    first N. Caller creates one fresh dict per run and passes the same one
-    into every build_campaign_group call.
+    keyed by (advertiser_id, tt_mini_id) -> set of material identities already
+    used - so multiple campaigns targeting the same mini game on the same
+    account pick different materials. Caller creates one fresh dict per run and
+    passes the same one into every build_campaign_group call.
+
+    以前这里存的是「已经用掉多少个」，然后靠 skip=N 跳过列表里前 N 个复选框——
+    纯按位置。列表顺序一变（按上传时间排序、中途上传新素材、DOM 混进别的复选框）
+    跳过的就不是同一批素材，去重形同虚设，而且只记数量不记身份，无法验证。
+    现在存的是【素材身份集合】，由 select_creative_materials 就地增删。
+
+    去重范围是【单次运行】：每次运行新建一个空 dict，所以同一次运行内不会重复，
+    跨运行会重新开始。素材不够时会绕回头复用，保证每条广告都选满。
     """
     creative_issue = None
     count = _creative_count_for(rec)
@@ -117,12 +124,19 @@ def fill_ad_core(page, rec, advertiser_id, creative_usage):
         search_term = str(rec.get("CreativeFile") or "").strip()
         if search_term:
             key = (str(advertiser_id), str(rec["TT Mini ID"]))
-            skip = creative_usage.get(key, 0)
-            selected = select_creative_materials(page, search_term, count, skip=skip)
-            creative_usage[key] = skip + selected
+            used = creative_usage.setdefault(key, set())
+            selected, wrapped = select_creative_materials(
+                page, search_term, count, used_ids=used
+            )
             if selected < count:
                 creative_issue = (
-                    f"素材库搜索 '{search_term}' 只选到 {selected}/{count} 个素材（素材库里不够了）"
+                    f"素材库搜索 '{search_term}' 只选到 {selected}/{count} 个素材"
+                    f"（整个素材库连一轮都凑不满 {count} 个）"
+                )
+            elif wrapped:
+                creative_issue = (
+                    f"素材库搜索 '{search_term}' 的素材已全部用过一轮，"
+                    f"本条广告开始复用（素材不够，这是预期的兜底行为）"
                 )
         else:
             creative_issue = "Creative Number 大于2但 CreativeFile 是空的，跳过手动选素材"

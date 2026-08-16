@@ -42,31 +42,178 @@ def _wait_visible_button(page, name, what, timeout_seconds=60):
     return found
 
 
+# 读出一个素材复选框所属卡片的【唯一身份】。
+#
+# 去重必须认素材本身，不能认位置。原来的做法是记「已经用掉 N 个」然后跳过列表里
+# 前 N 个复选框——只要列表顺序在两次页面加载之间变了（按上传时间排序、中途上传了
+# 新素材、DOM 里混进别的复选框），跳过的就不是同一批素材，去重形同虚设，而且无法
+# 验证也无法自我纠正。
+#
+# 按可靠性依次尝试：带长数字的 data-* 属性（素材 ID 最可能在这里）→ 缩略图/视频
+# URL 去掉查询参数后的路径尾段（查询参数里有每次都变的签名，必须去掉）→ title/alt
+# 里的素材名。全都拿不到就返回空串，调用方会拒绝去重而不是硬猜。
+# 实测（2026-08-14）素材卡的真实结构：
+#   <div class="container">
+#     <label role="checkbox" class="vi-checkbox cardCheckbox">…</label>   ← 传进来的 el
+#     <div class="video" id="v10033g50000d9up75vog65qe3a2vui0">           ← TikTok 视频 ID
+#       … <img src="https://p16.tiktokcdn.com/…">                        ← 缩略图，懒加载
+#
+# 用那个 <div class="video"> 上的 id 当身份：每个素材唯一，而且【从一开始就在 DOM
+# 里】，不受缩略图懒加载影响。
+#
+# 之前用缩略图 URL 当身份是错的，两个原因叠加：
+#  * 缩略图是懒加载的，加载完成前 30 张卡全是同一张占位图 —— 实测「30 张只有 1 个
+#    不同标识」，等 8 秒后才变成 30 个。拿它去重会把 29 个不同素材误判成同一个。
+#  * 更糟的是原来的容器定位是「从复选框往上找到第一个含 img 的祖先」。缩略图还没
+#    插入时卡片里根本没有 <img>，于是一路走到整个弹层（pane-library / drawer-…），
+#    30 个复选框全部解析到同一个巨大容器、同一张图。
+# 所以现在改成：以复选框的父元素为锚点（就是卡片容器），只往上找 2 层，且要求 id
+# 形如 v+数字 且足够长，这样不会误中 pane-library 这类外层容器的 id。
+_TILE_IDENTITY_JS = """
+el => {
+  const looksLikeVideoId = (s) => !!s && /^v\\d{5,}/.test(s) && s.length >= 20;
+
+  let card = el.parentElement;
+  for (let k = 0; k < 2 && card; k++) {
+    const direct = card.querySelector('div.video[id]');
+    if (direct && looksLikeVideoId(direct.id)) return 'vid:' + direct.id;
+    for (const n of card.querySelectorAll('[id]')) {
+      if (looksLikeVideoId(n.id)) return 'vid:' + n.id;
+    }
+    card = card.parentElement;
+  }
+
+  // 兜底：缩略图 URL。注意它是懒加载的，早期是占位图，所以只在拿不到视频 ID 时用，
+  // 并且调用方的唯一性校验会拦住占位图阶段。
+  card = el.parentElement;
+  if (card) {
+    const media = card.querySelector('img[src], video[src], video source[src]');
+    if (media) {
+      const raw = media.getAttribute('src') || media.getAttribute('poster') || '';
+      const seg = (raw.split('?')[0].split('/').filter(Boolean).pop() || '');
+      if (seg.length >= 8) return 'media:' + seg;
+    }
+  }
+  return '';
+}
+"""
+
+
+def _tile_identity(checkbox):
+    try:
+        return checkbox.evaluate(_TILE_IDENTITY_JS) or ""
+    except Exception:
+        return ""
+
+
+def _assert_identity_usable(page, checkboxes, total, timeout_seconds=40):
+    """确认取到的身份确实【唯一】，否则拒绝去重而不是悄悄用一个不可靠的标识。
+
+    正常情况下身份来自 <div class="video"> 的 id，从一开始就在 DOM 里，第一次读就
+    是唯一的。但如果某个账号只能退到缩略图 URL 兜底，那它是懒加载的——加载完成前
+    30 张卡全是同一张占位图（实测「30 张只有 1 个不同标识」，等 8 秒后才变成 30
+    个）。所以这里轮询而不是一次判定：等它变唯一，等不到才报错。
+
+    宁可明确报错中止，也不要拿一个会把不同素材误判成同一个的标识去做假去重。
+    """
+    from src.pages.common import wait_until
+
+    n = min(total, 30)
+    state = {"ids": [], "n_got": 0}
+
+    def unique_now():
+        ids = [_tile_identity(checkboxes.nth(i)) for i in range(n)]
+        got = [x for x in ids if x]
+        state["ids"], state["n_got"] = ids, len(got)
+        return got if (len(got) == n and len(set(got)) == n) else None
+
+    got = wait_until(page, unique_now, timeout_seconds=timeout_seconds, interval_ms=1500)
+    if got:
+        return got[0]
+
+    ids = state["ids"]
+    got = [x for x in ids if x]
+    if not got:
+        raise ValueError(
+            f"素材卡片上读不出任何身份标识（等了 {timeout_seconds} 秒）。"
+            "无法保证不重复使用素材，已中止。请把 logs/ 发出来以便补充识别方式。"
+        )
+    if len(got) < n:
+        raise ValueError(
+            f"前 {n} 张素材卡里有 {n - len(got)} 张读不出身份标识"
+            f"（等了 {timeout_seconds} 秒仍如此），无法保证不重复，已中止。"
+        )
+    dup = len(got) - len(set(got))
+    raise ValueError(
+        f"素材卡片的身份标识不唯一：前 {len(got)} 张里有 {dup} 个重复值"
+        f"（样例 {got[0]!r}，等了 {timeout_seconds} 秒仍不唯一）。"
+        "拿它去重会把不同素材误判成同一个，已中止。"
+    )
+
+
+# 找到素材卡所在的【真正可滚动容器】并直接把它滚到底。
+#
+# 绝不能靠 page.mouse.wheel：使用者实测观察到滚轮滚的是弹层【后面的页面】而不是
+# 列表本身。原因是 wheel 只是往鼠标位置派发滚轮事件——一旦列表容器已经到底，或者
+# 鼠标没落在容器的可滚动区域里，事件就冒泡到外层页面去了。表现就是后面的页面在
+# 动、列表一动不动，于是永远等不到下一批素材。
+#
+# 直接设置 scrollTop 是确定性的：先沿 DOM 往上找第一个「overflow 允许滚动且
+# scrollHeight 明显大于 clientHeight」的祖先，那就是列表容器，然后一次到底。
+# 设置 scrollTop 通常会自动派发 scroll 事件，这里再补派一次，确保懒加载的监听器
+# 一定收到。找不到容器时把整条祖先链带出来，方便排查而不是静默失败。
+_SCROLL_LIBRARY_JS = """
+el => {
+  const chain = [];
+  let n = el;
+  while (n && n !== document.body && n !== document.documentElement) {
+    const s = getComputedStyle(n);
+    const oy = s.overflowY;
+    const scrollable = (oy === 'auto' || oy === 'scroll' || oy === 'overlay');
+    const cls = (n.className && n.className.toString ? n.className.toString() : '').slice(0, 40);
+    if (scrollable && n.scrollHeight > n.clientHeight + 4) {
+      const before = n.scrollTop;
+      n.scrollTop = n.scrollHeight;
+      n.dispatchEvent(new Event('scroll', {bubbles: true}));
+      return {
+        found: true,
+        tag: n.tagName.toLowerCase(),
+        cls: cls,
+        testid: n.getAttribute('data-testid') || '',
+        before: Math.round(before),
+        after: Math.round(n.scrollTop),
+        scrollHeight: Math.round(n.scrollHeight),
+        clientHeight: Math.round(n.clientHeight)
+      };
+    }
+    chain.push(`${n.tagName.toLowerCase()}.${cls} oy=${oy} sh=${n.scrollHeight} ch=${n.clientHeight}`);
+    n = n.parentElement;
+  }
+  return {found: false, chain: chain.slice(0, 12)};
+}
+"""
+
+
 def _scroll_library_to_bottom(page, tiles):
-    """把素材库面板滚到底 —— 触发下一批 30 个素材加载的必要条件。
+    """把素材库【列表自身】滚到底 —— 触发下一批 30 个素材加载的必要条件。
 
-    对最后一个已加载的素材卡做 scroll_into_view_if_needed，比按固定像素 wheel
-    可靠得多：不用猜卡片高度，也不会因为一次只滚 400px 而根本没触到底部。之后
-    再补几次 wheel，确保确实压在底部、把懒加载触发出来。
-
-    锚点必须取真实可见卡片的坐标，绝不能用硬编码坐标 —— 硬编码位置可能整个错过
-    这个面板，去滚了底层页面（这个坑项目里别处已经踩过并写在注释里了）。
+    返回诊断字典：found 表示有没有找到列表的滚动容器，before/after 是滚动前后的
+    scrollTop（可用来确认真的滚动了）。调用方在 found 为假时会明确报错，而不是
+    默默少选几个素材。
     """
     n = tiles.count()
     if n == 0:
-        return
+        return {"found": False, "reason": "列表里没有素材卡"}
+
     last = tiles.nth(n - 1)
     try:
-        last.scroll_into_view_if_needed(timeout=5000)
-    except Exception:
-        pass
-    box = last.bounding_box()
-    if not box:
-        return
-    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-    for _ in range(4):
-        page.mouse.wheel(0, 800)
-        page.wait_for_timeout(300)
+        info = last.evaluate(_SCROLL_LIBRARY_JS)
+    except Exception as e:
+        return {"found": False, "reason": f"查找滚动容器时出错: {e}"}
+
+    # 给懒加载一点反应时间；真正的等待在调用方（轮询 checkbox 数量变多）
+    page.wait_for_timeout(400)
+    return info
 
 
 def wait_ad_page_ready(page):
@@ -105,19 +252,31 @@ def select_identity(page, handle_name: str):
     page.wait_for_timeout(500)
 
 
-def select_creative_materials(page, search_term: str, count: int, skip: int = 0):
-    """Manually pick `count` materials from the account's creative-material
-    library (instead of leaving TikTok's default "自动选择"/auto-select
-    behavior in place), searching by `search_term`. `skip` lets multiple
-    campaigns targeting the same mini game on the same account pick different
-    materials instead of all reusing the same first N results - caller is
-    responsible for tracking how many have already been used per
-    (advertiser_id, tt_mini_id) within a run.
-    Returns how many were actually selected - may be less than `count` if the
-    search runs out of results even after scrolling to the end (that's fine,
-    not an error - caller should just proceed with however many got picked).
+def select_creative_materials(page, search_term: str, count: int, used_ids=None):
+    """从素材库里手动挑 count 个素材（而不是沿用 TikTok 默认的「自动选择」），
+    按 search_term 搜索。
+
+    去重按【素材身份】进行，不按位置：
+      used_ids —— 一个 set，装本次运行中这个 (广告主, 小游戏) 组合已经用过的素材
+      身份。函数会跳过里面已有的，选中新的之后就地把身份加进去（原地修改，调用方
+      同一个 set 一直传下去即可）。
+
+    旧版是靠 skip=N「跳过列表里前 N 个复选框」，纯按位置。只要列表顺序在两次页面
+    加载之间变了（按上传时间排序、中途上传了新素材、DOM 里混进别的复选框），跳过
+    的就不是同一批素材，去重形同虚设；而且它只记「用掉多少个」不记「用了哪些」，
+    既无法验证也无法自我纠正，偏移量一旦算错就永久错下去。
+
+    素材不够时会【绕回头复用】：整个库遍历完还没选够，就清空 used_ids 重新扫一
+    遍，保证本条广告一定选满 count 个。效果是「先把所有素材都用一遍，用完了才开始
+    重复」。
+
+    返回 (选中数量, 是否绕回头复用过)。选中数量小于 count 只会发生在库里连一轮都
+    凑不满 count 个的情况下。
     """
     from src.pages.common import dismiss_popups, robust_click, wait_until
+
+    if used_ids is None:
+        used_ids = set()
 
     dismiss_popups(page)
 
@@ -199,63 +358,104 @@ def select_creative_materials(page, search_term: str, count: int, skip: int = 0)
     # nothing, since it's never Playwright-"visible"
     checkboxes = lib_pane.get_by_role("checkbox")
 
-    selected = 0
-    idx = skip
-    stable_rounds = 0
-    for _ in range(200):
+    # 先确认卡片上的身份标识确实唯一，不唯一就直接中止（见 _assert_identity_usable）
+    sample_id = _assert_identity_usable(page, checkboxes, checkboxes.count())
+
+    picked = []          # 本条广告已选中的素材身份（有序，便于排查）
+    scanned = 0          # 已经检查过的复选框下标
+    wrapped = False      # 是否已经把整个库用过一轮、开始复用
+    stale_rounds = 0
+
+    for _ in range(400):
         cur_total = checkboxes.count()
 
-        # 往前推进直到真的选够 count 个。
-        #
-        # 原来的条件是 idx < min(cur_total, skip + count)，配合无条件
-        # selected += 1。两个问题：
-        #  * robust_click 的最后一级兜底是 JS 直接派发 el.click()，永远不抛错，
-        #    所以 selected 统计的是「点击次数」而不是「真正选中数」。2026-08-14
-        #    实测出现过「返回 30，实际只有 29 个变成选中态」。
-        #  * 调用方用这个返回值累加 creative_usage 的偏移量
-        #    （creative_usage[key] = skip + selected），虚高会让后续计划的 skip
-        #    越算越偏，最终重复选到已经用过的素材——去重就白做了。
-        #  * 而且上限写死在 skip+count，一旦中间有点击失败，就再也补不回来了。
-        # 改成：以「真正变成选中态」计数，并且允许越过 skip+count 去补足。
-        while selected < count and idx < cur_total:
-            cb = checkboxes.nth(idx)
+        # 按【身份】而不是按位置推进：逐张读身份，用过的直接跳过（不点击）。
+        # 这样列表顺序变了、中途上传了新素材、DOM 里混进别的复选框，都不会导致
+        # 重复使用——判断依据是素材本身。
+        while scanned < cur_total and len(picked) < count:
+            cb = checkboxes.nth(scanned)
+            scanned += 1
+
+            ident = _tile_identity(cb)
+            if not ident:
+                continue                      # 读不出身份的宁可不选，绝不冒险
+            if ident in picked:
+                continue                      # 本条广告已经选过这一个
+            if not wrapped and ident in used_ids:
+                continue                      # 本次运行别的计划用过，优先挑没用过的
+
+            # 已经是选中态就别再点——再点一次会把它取消掉
+            try:
+                if cb.get_attribute("aria-checked") == "true":
+                    picked.append(ident)
+                    used_ids.add(ident)
+                    continue
+            except Exception:
+                pass
+
             cb.scroll_into_view_if_needed(timeout=5000)
             robust_click(page, cb, timeout=5000)
             page.wait_for_timeout(250)
-            idx += 1
             try:
-                if cb.get_attribute("aria-checked") == "true":
-                    selected += 1
+                really_checked = cb.get_attribute("aria-checked") == "true"
             except Exception:
-                # 读不到属性时保守按成功计，避免在异常状态下空转
-                selected += 1
-        if selected >= count:
+                really_checked = False
+            if really_checked:
+                picked.append(ident)
+                used_ids.add(ident)           # 只有真的选中了才记账
+
+        if len(picked) >= count:
             break
 
-        # 还不够，需要让素材库加载下一批。
+        # 已加载的都看过了，让素材库加载下一批。
         #
         # 这个库的真实行为（使用者手动操作确认）：一次只给 30 个（每行 5 个），
-        # 必须【滚到底】才会触发下一批，而且下一批要等【大约 10 秒】才出来。
-        #
-        # 原来的写法每轮只滚 400px、等 700ms，连续 4 轮数量没变就判定「素材不够
-        # 了」——总共只等了约 2.8 秒，远小于 10 秒。后果是从第二个计划起
-        # （去重让 skip=30，要拿第 31~60 个）永远等不到新素材：
-        #   while idx < min(cur_total=30, target_end=60)  →  while 30 < 30  →  假
-        # 一个都点不到，还误报「素材库里不够了」，而实际上素材是够的。
+        # 必须【滚到底】才会触发下一批，之后 10 秒内出现。这里是轮询而不是死等：
+        # wait_until 每 500ms 查一次，新素材一出现就立刻继续选，25 秒只是上限。
         before = cur_total
-        _scroll_library_to_bottom(page, tiles)
+        diag = _scroll_library_to_bottom(page, tiles)
+
+        if not diag.get("found"):
+            # 找不到列表的滚动容器 —— 说明滚动压根没作用在列表上（使用者实测见过
+            # 滚轮把弹层后面的页面滚了）。这种情况下再等也不会有新素材，明确报错
+            # 比默默少选素材好。
+            raise ValueError(
+                "找不到素材库列表自己的滚动容器，无法加载下一批素材。"
+                f"原因/祖先链: {diag.get('reason') or diag.get('chain')}"
+            )
+        if diag["after"] <= diag["before"] and diag["after"] + 4 < diag["scrollHeight"]:
+            # 容器找到了但没滚动成功，也不要当成「素材不够」
+            raise ValueError(
+                f"素材库列表的滚动容器没能滚动（scrollTop {diag['before']}->{diag['after']}, "
+                f"scrollHeight {diag['scrollHeight']}, 容器 {diag['tag']}.{diag['cls']}）"
+            )
 
         def more_loaded():
             return checkboxes.count() > before
 
         if wait_until(page, more_loaded, timeout_seconds=25):
-            stable_rounds = 0
+            stale_rounds = 0
             continue
 
-        # 滚到底并等满 25 秒仍然没有新素材，再给一次机会；两轮都没有才认定真的没了
-        stable_rounds += 1
-        if stable_rounds >= 2:
-            break
+        stale_rounds += 1
+        if stale_rounds < 2:
+            continue                          # 再给一次机会
+
+        # 整个库都遍历完了还没选够。
+        if not wrapped:
+            # 绕回头复用：把「本次运行用过」的记录清空，重新从头扫一遍，保证这条
+            # 广告也能选满 count 个。清空同时意味着后面的计划开始新的一轮，效果是
+            # 「先把所有素材都用一遍，用完了才开始重复」——正是需要的行为。
+            # 本条广告已经选中的仍然留在记录里，避免同一条广告里选到重复素材。
+            wrapped = True
+            used_ids.clear()
+            used_ids.update(picked)
+            scanned = 0
+            stale_rounds = 0
+            continue
+        break                                 # 绕过一轮还是不够，只能到此为止
+
+    selected = len(picked)
 
     confirm_btn = page.get_by_role("button", name="添加创意素材", exact=True)
     robust_click(page, confirm_btn.first, timeout=10000)
@@ -265,7 +465,7 @@ def select_creative_materials(page, search_term: str, count: int, skip: int = 0)
     robust_click(page, save_btn.first, timeout=10000)
     page.wait_for_timeout(2000)
 
-    return selected
+    return selected, wrapped
 
 
 def fill_ad_copy(page, ads_text: str):
