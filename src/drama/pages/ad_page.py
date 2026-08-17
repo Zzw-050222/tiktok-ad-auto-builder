@@ -11,6 +11,18 @@ select_creative_materials，不复制一份——那个函数里装着按素材�
 剧名自身就带连字符（The Seventh-Year Intern、Married to My Ex-Fiance、
 The Ex-Wife Who Drank the Moon、The Stand-In Brid），按 '-' 切会把剧名切断。
 两种算法在不带连字符的剧名上结果相同。
+
+文案和落地页链接同样照搬（占位文字实测一致：「输入文案」、
+`https://www.tiktok.com/minis/`），值取自表格的 ads_text 和 TT Mini URL。
+
+**身份（TikTok 账号）不要动**：短剧这条流程里选完素材后 TikTok 会自动填好
+（实测显示 WeShorts_US），页面上还写着「自定义身份已不再可用」。小游戏那边的
+select_identity 是按表格里的 Identity_ID / TikTok Account ID 去手动挑的，
+这里【不要】调用它——去点一个已经选好的下拉，只会有把它改错的风险。
+
+也不要写「只读确认身份」那种诊断：试过两版按标题往上找容器再抠文字的写法，
+分别读出「身份（TikTok 账号）」和「刷新」，都不是账号名。这个项目的规律是
+猜出来的定位基本都要返工，而流程本身并不依赖这个值——要看状态就看截图。
 """
 
 
@@ -26,3 +38,39 @@ def select_drama_creatives(page, series_name, count, used_ids=None):
     return select_creative_materials(
         page, search_term=series_name, count=count, used_ids=used_ids
     )
+
+
+def fill_drama_ad_copy(page, ads_text):
+    """填文案，填完【回读确认】。占位文字实测和小游戏一致（「输入文案」）。
+
+    回读这一步不能省：这一页输入框不止一个，填错地方不会报任何错。
+    本项目反复吃过「验证动作而不是验证结果」的亏（点了就当成功、改了就当对）。
+    """
+    from src.pages.ad_page import fill_ad_copy
+
+    fill_ad_copy(page, ads_text)
+    got = _read_value(page, page.get_by_placeholder("输入文案"))
+    if got is not None and got.strip() != (ads_text or "").strip():
+        raise ValueError(f"文案填完读回的是 {got[:60]!r}，期望 {ads_text[:60]!r}")
+
+
+def fill_drama_minis_url(page, url):
+    """填 TikTok Minis URL，填完【回读确认】。占位实测一致（https://www.tiktok.com/minis/）。"""
+    from src.pages.ad_page import fill_landing_url
+
+    fill_landing_url(page, url)
+    got = _read_value(page, page.get_by_placeholder("https://www.tiktok.com/minis/"))
+    if got is not None and got.strip() != (url or "").strip():
+        raise ValueError(f"Minis URL 填完读回的是 {got!r}，期望 {url!r}")
+
+
+def _read_value(loc_page, loc):
+    """读输入框当前的值。读不出来返回 None（区别于「读到了空字符串」）。"""
+    try:
+        for i in range(min(loc.count(), 5)):
+            el = loc.nth(i)
+            if el.is_visible():
+                return el.input_value(timeout=3000)
+    except Exception:
+        return None
+    return None

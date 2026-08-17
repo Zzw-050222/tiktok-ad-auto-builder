@@ -29,7 +29,11 @@ from src.drama.pages.adgroup_page import (
     select_target_roas_drama,
     select_tiktok_mini,
 )
-from src.drama.pages.ad_page import select_drama_creatives
+from src.drama.pages.ad_page import (
+    fill_drama_ad_copy,
+    fill_drama_minis_url,
+    select_drama_creatives,
+)
 from src.drama.pages.campaign_page import enable_catalog_campaign, ensure_chinese_ui
 from src.drama.series_lookup import load_series_map, resolve_series_from_campaign_name
 from src.pages.adgroup_page import set_regions
@@ -84,6 +88,8 @@ def main():
     tt_mini_id = str(d.get("TT Mini ID") or "").strip()
     mini_name = str(d.get("Mini Game Name") or "").strip()
     creative_count = int(d.get("Creative Number") or 1)
+    ads_text = str(d.get("ads_text") or "").strip()
+    minis_url = str(d.get("TT Mini URL") or "").strip()
 
     name_to_id, _ = load_series_map()
     series_name, series_id = resolve_series_from_campaign_name(campaign_name, name_to_id)
@@ -198,6 +204,16 @@ def main():
             L(f"          -> 选中 {picked} 个"
               + ("（素材不够，绕回头复用过）" if wrapped else ""))
             shot(page, "07_creatives")
+
+            # 身份不动：选完素材后 TikTok 会自动填好，页面上也写着
+            # 「自定义身份已不再可用」，动它只有改错的风险。状态见截图。
+
+            mark(f"填文案：{ads_text[:40]!r}")
+            fill_drama_ad_copy(page, ads_text)
+
+            mark(f"填 TikTok Minis URL：{minis_url}")
+            fill_drama_minis_url(page, minis_url)
+            shot(page, "08_copy_url")
 
             L(f"\n{'=' * 60}\n✓ 广告组层全流程跑通\n{'=' * 60}")
 
