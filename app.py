@@ -30,6 +30,11 @@ app = Flask(__name__)
 
 UPLOAD_PATH = UPLOADS_DIR / "latest.xlsx"
 
+# 不要用 5000：macOS 的「隔空播放接收器」（ControlCenter）常驻占着 *:5000，
+# Flask 起不来会报 Address already in use，而浏览器可能连到别的残留进程上，
+# 看到的是旧页面——排查起来非常费劲。
+PORT = 5050
+
 MODES = {
     "minigame": {
         "label": "小游戏",
@@ -245,4 +250,4 @@ def status():
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    app.run(host="127.0.0.1", port=PORT, debug=False)
