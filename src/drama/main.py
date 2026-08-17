@@ -1,13 +1,12 @@
 """短剧商品库 —— 批量入口：读表格，一个计划一个计划地搭。
 
 用法：
-    venv/bin/python3 -m src.drama.main [表格路径]        # 只搭草稿，不发布
-    venv/bin/python3 -m src.drama.main 短剧-excel.xlsx --publish   # 真的发布
-    venv/bin/python3 -m src.drama.main 短剧-excel.xlsx --search "The Alpha"  # 测试用
+    venv/bin/python3 -m src.drama.main [表格路径]                    # 搭建并发布
+    venv/bin/python3 -m src.drama.main 短剧-excel.xlsx --no-publish  # 只搭草稿
+    venv/bin/python3 -m src.drama.main 短剧-excel.xlsx --search xxx  # 测试用
 
-**默认不发布。** 加 --publish 会真的把广告投出去、真的花钱，所以它必须是命令行上
-一个明确的动作，而不是代码里一个默认打开的开关。小游戏那边 main.py 里写死
-PUBLISH = True，短剧这条线刚跑通、还没经过多轮真实投放验证，不沿用那个默认。
+**默认会真的发布并花钱**，和小游戏 main.py 的 PUBLISH = True 一致（使用者明确要求）。
+只想搭草稿检查时加 --no-publish。
 
 --search 只用于测试：正式跑素材是按剧名搜的，但有的剧还没上素材，
 指定一个库里确实有素材的词就能把整条流程跑通验证。正式跑不要带这个参数。
@@ -37,7 +36,7 @@ def L(s=""):
 
 def main():
     argv = sys.argv[1:]
-    publish = "--publish" in argv
+    publish = "--no-publish" not in argv
     search_override = None
     if "--search" in argv:
         i = argv.index("--search")
@@ -53,7 +52,7 @@ def main():
 
     L(f"表格: {path}")
     L(f"共 {len(records)} 行，分成 {len(groups)} 个计划")
-    L("发布模式: " + ("【会真的发布并花钱】" if publish else "只搭草稿，不发布"))
+    L("发布模式: " + ("【会真的发布并花钱】" if publish else "只搭草稿，不发布（--no-publish）"))
     if search_override:
         L(f"素材搜索词被命令行覆盖为 {search_override!r}（测试用，正式跑不要带 --search）")
     L("")
@@ -103,7 +102,7 @@ def main():
     L(f"完成: {ok}/{len(results)} 个计划成功")
     if not publish:
         L("（都是草稿，没有发布。确认无误后在后台手动点「全部发布」，"
-          "或者重跑时加 --publish）")
+          "或者重跑时去掉 --no-publish）")
 
     with open(str(LOGS_DIR / "drama_build.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(REPORT))

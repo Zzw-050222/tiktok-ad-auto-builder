@@ -29,12 +29,14 @@ from src.drama.pages.campaign_page import enable_catalog_campaign
 from src.drama.series_lookup import load_series_map, resolve_series_from_campaign_name
 from src.pages.ad_page import wait_ad_page_ready
 from src.pages.campaign_page import (
+    add_new_ad_group,
     continue_step,
     fill_campaign_details,
     select_native_growth_objective,
     start_new_campaign,
 )
 from src.pages.common import exit_draft
+from src.pages.duplicate import duplicate_ad_group_n_times, duplicate_ad_n_times
 from src.region_lookup import resolve_regions
 
 
@@ -50,6 +52,15 @@ def _creative_count(rec):
     except (TypeError, ValueError):
         n = 1
     return max(n, 1)
+
+
+def _extra_copies(rec):
+    """这一行要额外复制几份（表格 Ad Group Name Number）。空或读不出当作 0。"""
+    val = rec.get("Ad Group Name Number")
+    try:
+        return int(val) if val not in (None, "") else 0
+    except (TypeError, ValueError):
+        return 0
 
 
 def build_drama_campaign(
@@ -69,8 +80,8 @@ def build_drama_campaign(
         素材身份集合。同一个 dict 一路传下去，才能做到跨计划不重复用素材、
         库用完了才开始复用。
 
-    publish: 默认 False，只搭草稿。**改成 True 会真的花钱投放**，
-        必须是明确的人为决定，不要顺手打开。
+    publish: True 会真的发布并花钱。批量入口 src/drama/main.py 默认打开
+        （使用者明确要求），要只搭草稿就在命令行加 --no-publish。
 
     search_override: 只用于测试——正式跑素材按剧名搜，但有的剧还没上素材，
         指定一个库里确实有素材的词能把整条流程跑通验证。正式跑传 None。
@@ -111,15 +122,8 @@ def build_drama_campaign(
             tag = str(rec.get("Ad Group Name") or f"第{i + 1}行")
 
             if i > 0:
-                # 同一个计划下的第 2 行及以后需要新建广告组。小游戏那边用
-                # add_new_ad_group，但短剧这条线【还没实测过】多行的情况，
-                # 所以明确告警而不是默默当成功。
-                from src.pages.campaign_page import add_new_ad_group
-
-                warnings.append(
-                    f"[{tag}] 同一计划下的第 {i + 1} 个广告组：短剧这条线还没实测过"
-                    "多广告组，请跑完人工核对一遍"
-                )
+                # 同一个计划下的第 2 行及以后新建一个【空白】广告组（不是复制——
+                # 不同的行数据不同）。和小游戏完全一样，直接用同一个函数。
                 add_new_ad_group(page, campaign_name)
 
             fill_ad_group_name(page, str(rec["Ad Group Name"]))
@@ -167,6 +171,17 @@ def build_drama_campaign(
             # 页面上也写着「自定义身份已不再可用」，动它只有改错的风险。
             fill_drama_ad_copy(page, str(rec.get("ads_text") or "").strip())
             fill_drama_minis_url(page, str(rec.get("TT Mini URL") or "").strip())
+
+            # 复制份数（表格 Ad Group Name Number），和小游戏完全一样：必须等这一行的
+            # 广告组【和广告都填完】才复制，早一步复制出来的是没填完的内容。
+            # 有计划层预算的账号复制广告组，没有的那类账号根本没有「复制广告组」，
+            # 改成复制广告本身——这是小游戏那边实测出来的账号差异，直接沿用。
+            extra = _extra_copies(rec)
+            if extra > 0:
+                if budget_at_campaign:
+                    duplicate_ad_group_n_times(page, str(rec["Ad Group Name"]), extra)
+                else:
+                    duplicate_ad_n_times(page, extra)
 
         if publish:
             page.get_by_role("button", name="全部发布", exact=True).click(timeout=15000)
