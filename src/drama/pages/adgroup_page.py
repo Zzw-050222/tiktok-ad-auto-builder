@@ -1107,73 +1107,66 @@ def select_target_roas_drama(page, roas_value, timeout_seconds=150):
         pass
 
 
+def _audience_section_text(page, limit=500):
+    """「受众定向」区块的可见文字。读不到返回 None。"""
+    try:
+        sec = page.get_by_text("受众定向", exact=True)
+        if sec.count() == 0:
+            return None
+        return sec.first.evaluate("""(el, lim) => {
+          let n = el;
+          for (let k = 0; k < 6 && n; k++) {
+            n = n.parentElement;
+            if (!n) break;
+            const t = (n.innerText || '').replace(/\\s+/g, ' ').trim();
+            if (t.length > 80) return t.slice(0, lim);
+          }
+          return null;
+        }""", limit)
+    except Exception:
+        return None
+
+
+def _regions_already_set(page, region_pairs):
+    """要选的地区是不是【本来就已经选好了】。
+
+    地域和 TikTok Mini、目标 ROAS 一样是「共享设置」：新建广告组时会从账号/计划层
+    带过来。实测新建的广告组里「地域: 美国」已经填好，这时候去点那个框【根本不会
+    展开下拉】——诊断日志是「搜索输入框 30 秒没出现」，看起来像点不中，其实是
+    不需要点。使用者也确认：选完剧集后 Mini / 价值类型 / ROAS / 地域都不用重新选，
+    直接点「继续」去广告层就行，广告层的东西才要重新填。
+
+    这里不写成「无条件跳过」而是「已经对了才跳过」：万一表格里的地区和页面上带过来的
+    不一样（换国家投放），还是要真的去选。判据是要选的每个地区名都出现在
+    「受众定向」区块里。
+    """
+    txt = _audience_section_text(page)
+    if not txt:
+        return False
+    return all(str(name).strip() and str(name).strip() in txt
+               for _rid, name in region_pairs)
+
+
 def set_regions_drama(page, region_pairs):
-    """选地域。逻辑完全复用小游戏的 set_regions，只在调用前【显式把地域框滚进视野】。
+    """选地域。已经选好了就跳过；确实要改才走小游戏那套 set_regions。
 
-    为什么要多这一步：地域在页面很下面（优化和出价 -> 预算和排期 -> 受众定向）。
-    以前能成，是因为上一步「填 ROAS」会顺带把页面滚下去；后来 ROAS 变成共享设置、
-    已经是目标值就跳过不填，页面就停在上面，地域框留在视口外，于是点不中——
-    实测失败截图里正好停在「受众定向」刚露头的位置。
+    多这一层的原因见 _regions_already_set：地域是共享设置，新建广告组时通常已经
+    填好，此时那个框点不开——我为此改了三轮「滚动」都是修错了方向，而答案就在
+    自己打印的诊断里（受众定向区块文字里明明白白写着已选的国家）。
 
-    这是同一类老毛病：【依赖上一步的副作用把页面滚到位】。上一步一改，这一步就坏。
-    所以这里自己滚，不指望别人。
-
-    注意 _wait_for_region_field 返回的「可见」并不代表在视口内：
-    getBoundingClientRect 非零就算可见，屏幕外的元素照样算。
+    真要改时才滚动+点击：地域在页面很下面，而且不能依赖上一步「填 ROAS」顺带把
+    页面滚下去（ROAS 现在已是目标值就跳过了）。
     """
     from src.pages.adgroup_page import _wait_for_region_field, set_regions
 
-    field = _wait_for_region_field(page, timeout_seconds=60)
-    if not field:
-        print("          [地域] 预滚动：没找到地域框，交给 set_regions 自己再等",
+    if _regions_already_set(page, region_pairs):
+        names = "、".join(str(n) for _r, n in region_pairs)
+        print(f"          [地域] 已经是「{names}」（共享设置带过来的），不用改",
               flush=True)
-    else:
-        box_before = None
-        try:
-            box_before = field.bounding_box()
-        except Exception:
-            pass
-        ok = _scroll_into_comfortable_view(page, field)
-        page.wait_for_timeout(600)
-        box_after = None
-        try:
-            box_after = field.bounding_box()
-        except Exception:
-            pass
-        vh = (page.viewport_size or {}).get("height")
-        print(f"          [地域] 预滚动: 到位={ok} 视口高={vh} "
-              f"y {round(box_before['y']) if box_before else '?'} -> "
-              f"{round(box_after['y']) if box_after else '?'}", flush=True)
-    # 点不开下拉时最需要知道的是：这个框是不是【只读】的。
-    # 这一页所有出价项都标着「共享设置」，目标 ROAS 已经变成不可编辑的文本，
-    # 地域很可能也一样——那就不是「点不中」而是「不该在这里点」。
+        return []
+
+    field = _wait_for_region_field(page, timeout_seconds=60)
     if field:
-        try:
-            info = field.evaluate("""el => {
-              const attrs = {};
-              for (const a of el.attributes || []) attrs[a.name] = (a.value || '').slice(0, 70);
-              const st = getComputedStyle(el);
-              return {tag: el.tagName.toLowerCase(), attrs: attrs,
-                      pointerEvents: st.pointerEvents, opacity: st.opacity,
-                      disabled: !!el.disabled};
-            }""")
-            print(f"          [地域] 框属性: {info}", flush=True)
-        except Exception as e:
-            print(f"          [地域] 读框属性出错: {str(e)[:60]}", flush=True)
-    try:
-        sec = page.get_by_text("受众定向", exact=True)
-        if sec.count():
-            txt = sec.first.evaluate("""el => {
-              let n = el;
-              for (let k = 0; k < 6 && n; k++) {
-                n = n.parentElement;
-                if (!n) break;
-                const t = (n.innerText || '').replace(/\s+/g, ' ').trim();
-                if (t.length > 80) return t.slice(0, 400);
-              }
-              return '(读不到)';
-            }""")
-            print(f"          [地域] 受众定向区块: {txt!r}", flush=True)
-    except Exception:
-        pass
+        _scroll_into_comfortable_view(page, field)
+        page.wait_for_timeout(600)
     return set_regions(page, region_pairs)

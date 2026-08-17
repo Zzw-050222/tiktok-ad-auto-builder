@@ -136,6 +136,9 @@ def build_drama_campaign(
         budget_at_campaign = None
         for i, rec in enumerate(units):
             tag = str(rec.get("Ad Group Name") or f"第{i + 1}个")
+            # 进度必须打出来。上一轮排查时只能靠数「[地域] 打印了几次」来推断
+            # 循环跑到第几个广告组了——那说明日志缺得太厉害。
+            print(f"  --- 第 {i + 1}/{len(units)} 个广告组 ---", flush=True)
 
             if i == 0:
                 # 第 1 个：走新建计划的流程
@@ -159,6 +162,7 @@ def build_drama_campaign(
             else:
                 # 第 2 个起：回到刚发布的那个计划里再建一个广告组。
                 # 不用复制功能——使用者要求每个都真建一遍。
+                print("      从计划列表进入原计划，点「创建」新建广告组…", flush=True)
                 open_campaign_and_create_adgroup(page, advertiser_id, campaign_name)
 
             fill_ad_group_name(page, str(rec["Ad Group Name"]))
@@ -212,11 +216,14 @@ def build_drama_campaign(
             # 整个库用完了才绕回头复用。
             used = creative_usage.setdefault((str(advertiser_id), series_name), set())
             before = len(used)
+            print(f"      选素材：搜 {(search_override or series_name)!r}，"
+                  f"要 {_creative_count(rec)} 个（已用过 {len(used)} 个）", flush=True)
             picked, wrapped = select_drama_creatives(
                 page, search_override or series_name, _creative_count(rec),
                 used_ids=used
             )
             want = _creative_count(rec)
+            print(f"      选到 {picked} 个素材，去重集合现在 {len(used)} 个", flush=True)
             if picked < want:
                 warnings.append(f"[{tag}] 只选到 {picked} 个素材，少于要求的 {want} 个")
             if wrapped:
@@ -237,7 +244,10 @@ def build_drama_campaign(
             if publish:
                 # 每个广告组建完就发布。新流程必须这样——发布完页面才会回到
                 # 计划列表，才能从列表进原计划去建下一个。
+                print(f"      第 {i + 1}/{len(units)} 个：开始发布…", flush=True)
                 publish_all(page)
+                print(f"      第 {i + 1}/{len(units)} 个：已发布，"
+                      f"页面已回到计划列表", flush=True)
             else:
                 warnings.append("未发布 —— 草稿已保存，需人工检查后手动点「全部发布」")
 
