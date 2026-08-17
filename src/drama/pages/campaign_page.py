@@ -184,3 +184,128 @@ def enable_catalog_campaign(page, timeout_seconds=60):
         "点了 4 次「设置商品库推广系列」开关，状态始终没有变成打开。"
         "不要重跑硬闯——先手动确认这个账号是否允许开启商品库推广系列。"
     )
+
+
+CAMPAIGN_LIST_URL = "https://ads.tiktok.com/i18n/manage/campaign"
+
+
+def _newest_campaign_link(page, campaign_name):
+    """计划列表里名字完全等于 campaign_name、且【最靠上】的那个链接。
+
+    两个条件缺一不可，都是实测决定的：
+      * 不能只按「点第一行」——点错行会把广告组建进【别的计划】里，而且新流程是
+        边建边真发布，错了就是真花钱。
+      * 不能只按名字——同名计划真的存在（探针在列表里看到同一个计划名出现两次，
+        因为同一份表跑过两遍），必须取最靠上的那个才是刚建的。
+
+    定位来自真实 DOM：计划名是 role="link"、class 含 KsLink 的元素，
+    自定义标签名（ks-link-1-1-1w）每次加载都随机，不能用。名字在 DOM 里是
+    【完整的】，页面上看到的省略号只是 CSS 截断，所以可以精确比对。
+    """
+    want = (campaign_name or "").strip()
+    if not want:
+        return None
+    loc = page.locator('[role="link"]')
+    best, best_y = None, None
+    try:
+        n = loc.count()
+    except Exception:
+        return None
+    for i in range(min(n, 80)):
+        el = loc.nth(i)
+        try:
+            if not el.is_visible():
+                continue
+            if (el.inner_text() or "").strip() != want:
+                continue
+            box = el.bounding_box()
+            if not box:
+                continue
+            if best_y is None or box["y"] < best_y:
+                best, best_y = el, box["y"]
+        except Exception:
+            continue
+    return best
+
+
+def publish_all(page, timeout_seconds=300):
+    """点「全部发布」并等到真的发布完（页面自己跳回计划列表）。
+
+    绝不要自己强行跳转：中途跳走会打断发布，计划实际不会上线。慢没关系，早跳不行。
+    """
+    from src.pages.common import wait_until
+
+    page.get_by_role("button", name="全部发布", exact=True).click(timeout=15000)
+    try:
+        page.get_by_text("广告创建中", exact=False).wait_for(state="visible", timeout=15000)
+    except Exception:
+        pass
+    page.wait_for_url(lambda url: "manage/campaign" in url, timeout=timeout_seconds * 1000)
+    wait_until(page, lambda: "manage/campaign" in page.url, timeout_seconds=30)
+    page.wait_for_timeout(1500)
+
+
+def open_campaign_and_create_adgroup(
+    page, advertiser_id, campaign_name, settle_seconds=5, timeout_seconds=120
+):
+    """发布完之后，回到刚建的那个计划里【再建一个广告组】。
+
+    新流程（使用者指定）：不复制广告组、也不复制广告，而是
+        建一个 -> 发布 -> 回计划列表 -> 点刚建的计划 -> 点右上「创建」-> 再建一个
+
+    发布完页面会自己停在计划列表。使用者提醒：偶尔会卡一下，所以先缓冲几秒再点，
+    别在列表还没刷新出来的时候就去点第一行。
+    """
+    from src.pages.common import robust_click, wait_until
+
+    if "manage/campaign" not in page.url:
+        page.goto(
+            f"{CAMPAIGN_LIST_URL}?aadvid={advertiser_id}",
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
+    # 缓冲：列表可能还在刷新，刚发布的计划未必已经排到最上面
+    page.wait_for_timeout(int(settle_seconds * 1000))
+
+    link = wait_until(
+        page,
+        lambda: _newest_campaign_link(page, campaign_name),
+        timeout_seconds=timeout_seconds,
+    )
+    if link is None:
+        raise ValueError(
+            f"在计划列表里找不到名字完全等于 {campaign_name!r} 的计划。"
+            "没找到就【不点】——盲点第一行有可能把广告组建进别的计划里，"
+            "而这条流程是边建边真发布的。"
+        )
+    robust_click(page, link, timeout=10000)
+
+    if not wait_until(page, lambda: "manage/adgroup" in page.url, timeout_seconds=90):
+        raise ValueError(
+            f"点了计划 {campaign_name!r} 之后没能进入广告组列表，当前地址: {page.url[:120]}"
+        )
+
+    def create_btn():
+        b = page.get_by_role("button", name="创建", exact=True)
+        for i in range(min(b.count(), 5)):
+            if b.nth(i).is_visible():
+                return b.nth(i)
+        return None
+
+    btn = wait_until(page, create_btn, timeout_seconds=90)
+    if not btn:
+        raise ValueError("广告组列表页上没找到右上角的「创建」按钮")
+    robust_click(page, btn, timeout=10000)
+
+    if not wait_until(
+        page, lambda: "create/spc-adgroup" in page.url, timeout_seconds=120
+    ):
+        raise ValueError(
+            f"点「创建」之后没能进入广告组创建页，当前地址: {page.url[:120]}"
+        )
+    wait_until(
+        page,
+        lambda: page.get_by_text("广告组名称", exact=True).count() > 0,
+        timeout_seconds=90,
+    )
+    page.wait_for_timeout(1500)

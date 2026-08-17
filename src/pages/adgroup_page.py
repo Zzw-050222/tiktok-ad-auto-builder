@@ -237,6 +237,7 @@ def set_regions(page, region_id_name_pairs):
         if search_input.count() == 0 or not search_input.first.is_visible():
             field = _wait_for_region_field(page)
             if not field:
+                print(f"          [地域] {name}: 找不到地域选择框", flush=True)
                 failed.append((region_id, name))
                 continue
             click_to_open(field, timeout=10000)
@@ -244,6 +245,8 @@ def set_regions(page, region_id_name_pairs):
             try:
                 search_input.wait_for(state="visible", timeout=30000)
             except Exception:
+                print(f"          [地域] {name}: 点开地域框后，搜索输入框 30 秒没出现"
+                      "（多半是下拉根本没展开）", flush=True)
                 failed.append((region_id, name))
                 continue
 
@@ -273,6 +276,27 @@ def set_regions(page, region_id_name_pairs):
             return None
 
         if not wait_until(page, option_ready, timeout_seconds=60):
+            # 把实际搜出来的结果打出来：是「搜不到」还是「搜到了但 ID 对不上」，
+            # 这两种要区分，否则只能靠猜。
+            try:
+                res = page.locator('[data-testid^="lego-search-result-content-"]')
+                got = []
+                for k in range(min(res.count(), 8)):
+                    try:
+                        tid = res.nth(k).get_attribute("data-testid")
+                        got.append(f"{tid}={res.nth(k).inner_text().strip()[:20]!r}")
+                    except Exception:
+                        continue
+                typed = ""
+                try:
+                    typed = search_input.first.input_value(timeout=2000)
+                except Exception:
+                    pass
+                print(f"          [地域] {name}: 搜了 60 秒没等到 "
+                      f"lego-search-result-content-{region_id}。"
+                      f"搜索框里是 {typed!r}，当前结果: {got or '（空）'}", flush=True)
+            except Exception:
+                pass
             failed.append((region_id, name))
             continue
 

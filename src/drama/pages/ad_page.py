@@ -35,8 +35,12 @@ def select_drama_creatives(page, series_name, count, used_ids=None):
     from src.pages.ad_page import select_creative_materials, wait_ad_page_ready
 
     wait_ad_page_ready(page)
+    # 比小游戏更有耐心：使用者明确要求「宁可慢，也要保证不选重复」。
+    # 素材库一次给 30 个，滚到底才加载下一批，新一批出现后 DOM 还在补，
+    # 所以多等（40 秒）并且每批加载完静置 3 秒再开始选。
     return select_creative_materials(
-        page, search_term=series_name, count=count, used_ids=used_ids
+        page, search_term=series_name, count=count, used_ids=used_ids,
+        batch_wait_seconds=40, batch_settle_ms=3000,
     )
 
 

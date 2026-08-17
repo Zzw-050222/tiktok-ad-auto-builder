@@ -252,7 +252,8 @@ def select_identity(page, handle_name: str):
     page.wait_for_timeout(500)
 
 
-def select_creative_materials(page, search_term: str, count: int, used_ids=None):
+def select_creative_materials(page, search_term: str, count: int, used_ids=None,
+                              batch_wait_seconds=25, batch_settle_ms=0):
     """从素材库里手动挑 count 个素材（而不是沿用 TikTok 默认的「自动选择」），
     按 search_term 搜索。
 
@@ -269,6 +270,10 @@ def select_creative_materials(page, search_term: str, count: int, used_ids=None)
     素材不够时会【绕回头复用】：整个库遍历完还没选够，就清空 used_ids 重新扫一
     遍，保证本条广告一定选满 count 个。效果是「先把所有素材都用一遍，用完了才开始
     重复」。
+
+    batch_wait_seconds / batch_settle_ms —— 加载下一批素材的耐心。默认值就是小游戏
+    一直在用的行为，不要改。短剧那边传的更大：使用者要求「宁可慢，也要保证不选重复」，
+    所以多给等待时间、每批加载完再静置一会儿才开始选。
 
     返回 (选中数量, 是否绕回头复用过)。选中数量小于 count 只会发生在库里连一轮都
     凑不满 count 个的情况下。
@@ -443,8 +448,11 @@ def select_creative_materials(page, search_term: str, count: int, used_ids=None)
         def more_loaded():
             return checkboxes.count() > before
 
-        if wait_until(page, more_loaded, timeout_seconds=25):
+        if wait_until(page, more_loaded, timeout_seconds=batch_wait_seconds):
             stale_rounds = 0
+            if batch_settle_ms:
+                # 新一批刚出现时 DOM 还在补，静置一会儿再选，宁可慢也别选错
+                page.wait_for_timeout(batch_settle_ms)
             continue
 
         stale_rounds += 1

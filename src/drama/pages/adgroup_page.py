@@ -243,7 +243,27 @@ def select_product_catalog(page, catalog_id=None, timeout_seconds=60):
 
     found = wait_until(page, visible_ids, timeout_seconds=45)
     if not found:
-        raise ValueError("下拉展开后，没有任何可见的商品库（等了 45 秒）")
+        # 不能只说「没有可见的商品库」——那句话看不出是「下拉没展开」、
+        # 「展开了但还在转圈」还是「TikTok 改了选项渲染方式、不再带 ID 了」。
+        # 把下拉里实际有什么打出来。
+        try:
+            box = page.locator('[class*="dropdown"]:visible, [class*="popover"]:visible')
+            texts = []
+            for i in range(min(box.count(), 4)):
+                try:
+                    t = (box.nth(i).inner_text() or "").replace("\n", " ").strip()
+                    if t:
+                        texts.append(t[:200])
+                except Exception:
+                    continue
+            raise ValueError(
+                "下拉展开后，没有任何可见的商品库（等了 45 秒）。"
+                f"当前下拉/弹层里的文字: {texts or '（空——下拉可能压根没展开）'}"
+            )
+        except ValueError:
+            raise
+        except Exception:
+            raise ValueError("下拉展开后，没有任何可见的商品库（等了 45 秒）")
 
     if catalog_id:
         want = str(catalog_id).strip()
@@ -265,7 +285,31 @@ def select_product_catalog(page, catalog_id=None, timeout_seconds=60):
 
     opt.scroll_into_view_if_needed(timeout=5000)
     opt.click(timeout=10000)
-    page.wait_for_timeout(2500)
+    page.wait_for_timeout(2000)
+
+    # 点完必须确认【真的选上了】，不能点完就走。
+    # 判据：占位文字「请选择商品库」从页面上消失——选中后框里显示的是商品库名字。
+    #
+    # 这一步原来是没有的，于是商品库没选上时这个函数照样返回成功，错误延后到
+    # 「特定剧集」才爆出来，报的还是「没找到添加按钮」——看错误信息根本想不到
+    # 是商品库没选上。本项目在「验证动作而不是验证结果」上已经栽过好几次。
+    def selected():
+        return _first_visible(page.get_by_text(CATALOG_PLACEHOLDER, exact=True)) is None
+
+    if not wait_until(page, selected, timeout_seconds=30):
+        # 再点一次那个选项——下拉可能还开着，第一次点没落到实处
+        try:
+            opt.click(timeout=8000)
+            page.wait_for_timeout(2000)
+        except Exception:
+            pass
+    if not wait_until(page, selected, timeout_seconds=30):
+        raise ValueError(
+            f"点了商品库选项，但「{CATALOG_PLACEHOLDER}」这几个字仍在页面上，"
+            "说明商品库没有真正选上。后面的「特定剧集」依赖它，所以在这里就停住，"
+            "而不是带着未选中的状态往下跑。"
+        )
+    page.wait_for_timeout(1000)
 
 
 def _episode_row_radio(page, row_text_locator):
@@ -929,6 +973,68 @@ def select_ad_revenue_value_type(page, timeout_seconds=90):
 _DRAMA_ROAS_PLACEHOLDER_RE = re.compile(r"ROAS|请输入一个值")
 
 
+_ROAS_VALUE_RE = re.compile(r"ROAS[:：]\s*([0-9]+(?:\.[0-9]+)?)")
+
+
+def _same_number(a, b):
+    """数值相等就算相等：页面显示 '1.000'，表格里是 1，两者应当视为一致。"""
+    try:
+        return abs(float(a) - float(b)) < 1e-9
+    except (TypeError, ValueError):
+        return str(a).strip() == str(b).strip()
+
+
+def _current_roas(page):
+    """读「优化和出价」区块里当前显示的目标 ROAS。读不到返回 None。
+
+    页面上是「第 0 天 ROAS: 1.000」这样的文本（不是输入框），所以按文字抠。
+    """
+    txt = _bidding_section_text(page, limit=600)
+    if not isinstance(txt, str):
+        return None
+    m = _ROAS_VALUE_RE.search(txt)
+    return m.group(1) if m else None
+
+
+def _visible_placeholders(page, limit=25):
+    """页面上所有可见输入框的 placeholder，用于「没找到目标输入框」时看清实际有什么。"""
+    out = []
+    try:
+        loc = page.locator("input:visible, textarea:visible")
+        for i in range(min(loc.count(), limit)):
+            el = loc.nth(i)
+            try:
+                ph = el.get_attribute("placeholder")
+                val = el.input_value(timeout=1000)
+                if ph or val:
+                    out.append(f"[{ph or ''}]={val or ''}")
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
+def _bidding_section_text(page, limit=300):
+    """「优化和出价」区块的可见文字，用于诊断 ROAS 那一块到底渲染成了什么样。"""
+    try:
+        sec = page.get_by_text("优化和出价", exact=True)
+        if sec.count() == 0:
+            return "（页面上没有「优化和出价」这个标题）"
+        return sec.first.evaluate("""(el, lim) => {
+          let n = el;
+          for (let k = 0; k < 6 && n; k++) {
+            n = n.parentElement;
+            if (!n) break;
+            const t = (n.innerText || '').replace(/\s+/g, ' ').trim();
+            if (t.length > 60) return t.slice(0, lim);
+          }
+          return '(读不到)';
+        }""", limit)
+    except Exception as e:
+        return f"(读取出错: {str(e)[:60]})"
+
+
 def select_target_roas_drama(page, roas_value, timeout_seconds=150):
     """填短剧广告组的目标 ROAS。
 
@@ -948,12 +1054,33 @@ def select_target_roas_drama(page, roas_value, timeout_seconds=150):
         loc = page.get_by_placeholder(_DRAMA_ROAS_PLACEHOLDER_RE)
         return _first_visible(loc)
 
+    # 先看是不是【已经就是要的值】。竞价策略这几项标着「共享设置」，值会从同账号
+    # 上一个计划带过来：实测新建计划时「第 0 天 ROAS: 1.000」已经填好了，那个位置
+    # 根本不是输入框而是文本，程序会一直等一个永远不出现的空框，白等 150 秒。
+    # 和选 Mini、选价值类型一样：已经对了就别动它。
+    already = _current_roas(page)
+    if already is not None and _same_number(already, roas_value):
+        print(f"          [ROAS] 已经是 {already}（共享设置带过来的），不用改",
+              flush=True)
+        return
+
     box = wait_until(page, roas_input, timeout_seconds=timeout_seconds)
     if not box:
+        # 没有可编辑的框，但页面上显示的值和表格要的不一样——必须让人知道，
+        # 不能默默用着别的值往下跑。
+        if already is not None:
+            raise ValueError(
+                f"页面上的目标 ROAS 是 {already}，但表格要的是 {roas_value}，"
+                "而且这里没有可编辑的输入框（竞价策略是「共享设置」，值从上一个计划"
+                "带过来的）。请先在后台把这个计划的目标 ROAS 改成表格里的值，"
+                "或者把表格改成和页面一致。带着不对的出价往下跑会投错钱。"
+            )
+        # 等不到就把那块区域【实际有什么】打出来，而不是只报一句「没等到」。
+        # 这个项目的规律：靠猜写定位基本都要返工，先看真实 DOM 的一次就对。
         raise ValueError(
-            f"等了 {timeout_seconds} 秒没等到 ROAS 输入框。"
-            "这个框是选完 TikTok Mini 之后才出现的——先确认 Mini 真的选中了"
-            "（选择器显示「无法使用此 TikTok Mini」时也算没选中）。"
+            f"等了 {timeout_seconds} 秒没等到 ROAS 输入框。\n"
+            f"页面上可见的输入框占位文字: {_visible_placeholders(page)}\n"
+            f"「优化和出价」区块当前内容: {_bidding_section_text(page)!r}"
         )
 
     # 使用者演示：点「请输入广告花费…」这段文字就能输入。先滚过去再点再填——
@@ -978,3 +1105,75 @@ def select_target_roas_drama(page, roas_value, timeout_seconds=150):
         raise
     except Exception:
         pass
+
+
+def set_regions_drama(page, region_pairs):
+    """选地域。逻辑完全复用小游戏的 set_regions，只在调用前【显式把地域框滚进视野】。
+
+    为什么要多这一步：地域在页面很下面（优化和出价 -> 预算和排期 -> 受众定向）。
+    以前能成，是因为上一步「填 ROAS」会顺带把页面滚下去；后来 ROAS 变成共享设置、
+    已经是目标值就跳过不填，页面就停在上面，地域框留在视口外，于是点不中——
+    实测失败截图里正好停在「受众定向」刚露头的位置。
+
+    这是同一类老毛病：【依赖上一步的副作用把页面滚到位】。上一步一改，这一步就坏。
+    所以这里自己滚，不指望别人。
+
+    注意 _wait_for_region_field 返回的「可见」并不代表在视口内：
+    getBoundingClientRect 非零就算可见，屏幕外的元素照样算。
+    """
+    from src.pages.adgroup_page import _wait_for_region_field, set_regions
+
+    field = _wait_for_region_field(page, timeout_seconds=60)
+    if not field:
+        print("          [地域] 预滚动：没找到地域框，交给 set_regions 自己再等",
+              flush=True)
+    else:
+        box_before = None
+        try:
+            box_before = field.bounding_box()
+        except Exception:
+            pass
+        ok = _scroll_into_comfortable_view(page, field)
+        page.wait_for_timeout(600)
+        box_after = None
+        try:
+            box_after = field.bounding_box()
+        except Exception:
+            pass
+        vh = (page.viewport_size or {}).get("height")
+        print(f"          [地域] 预滚动: 到位={ok} 视口高={vh} "
+              f"y {round(box_before['y']) if box_before else '?'} -> "
+              f"{round(box_after['y']) if box_after else '?'}", flush=True)
+    # 点不开下拉时最需要知道的是：这个框是不是【只读】的。
+    # 这一页所有出价项都标着「共享设置」，目标 ROAS 已经变成不可编辑的文本，
+    # 地域很可能也一样——那就不是「点不中」而是「不该在这里点」。
+    if field:
+        try:
+            info = field.evaluate("""el => {
+              const attrs = {};
+              for (const a of el.attributes || []) attrs[a.name] = (a.value || '').slice(0, 70);
+              const st = getComputedStyle(el);
+              return {tag: el.tagName.toLowerCase(), attrs: attrs,
+                      pointerEvents: st.pointerEvents, opacity: st.opacity,
+                      disabled: !!el.disabled};
+            }""")
+            print(f"          [地域] 框属性: {info}", flush=True)
+        except Exception as e:
+            print(f"          [地域] 读框属性出错: {str(e)[:60]}", flush=True)
+    try:
+        sec = page.get_by_text("受众定向", exact=True)
+        if sec.count():
+            txt = sec.first.evaluate("""el => {
+              let n = el;
+              for (let k = 0; k < 6 && n; k++) {
+                n = n.parentElement;
+                if (!n) break;
+                const t = (n.innerText || '').replace(/\s+/g, ' ').trim();
+                if (t.length > 80) return t.slice(0, 400);
+              }
+              return '(读不到)';
+            }""")
+            print(f"          [地域] 受众定向区块: {txt!r}", flush=True)
+    except Exception:
+        pass
+    return set_regions(page, region_pairs)
