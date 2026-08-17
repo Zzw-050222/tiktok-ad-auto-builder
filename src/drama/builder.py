@@ -21,6 +21,7 @@ from src.drama.pages.ad_page import (
 from src.drama.pages.adgroup_page import (
     add_specific_episode,
     fill_ad_group_name,
+    select_ad_revenue_value_type,
     select_product_catalog,
     select_target_roas_drama,
     select_tiktok_mini,
@@ -134,6 +135,9 @@ def build_drama_campaign(
                 tt_mini_id=str(rec.get("TT Mini ID") or "").strip(),
                 mini_name=str(rec.get("Mini Game Name") or "").strip(),
             )
+            # 选完 Mini 才会出现「选择价值类型」，默认是「应用内购价值」，
+            # 短剧要改成「广告收入价值」，改完再填 ROAS。
+            select_ad_revenue_value_type(page)
             select_target_roas_drama(page, rec["roas_bid"])
 
             region_pairs, missing = resolve_regions(str(rec["Region"]).strip())

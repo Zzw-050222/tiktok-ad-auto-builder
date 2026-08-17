@@ -846,6 +846,83 @@ def select_tiktok_mini(page, tt_mini_id=None, mini_name=None, timeout_seconds=90
     )
 
 
+# 「选择价值类型」的两个选项。默认是「应用内购价值」，短剧要改成「广告收入价值」。
+VALUE_TYPE_IAP = "应用内购价值"
+VALUE_TYPE_AD_REVENUE = "广告收入价值"
+
+
+def select_ad_revenue_value_type(page, timeout_seconds=90):
+    """把「选择价值类型」从默认的「应用内购价值」改成「广告收入价值」。
+
+    位置：选完 TikTok Mini 之后、填目标 ROAS 之前。操作就是点那个框展开下拉、
+    点「广告收入价值」。
+
+    沿用选 Mini 那一节踩出来的三条：
+      * 找元素用 Playwright 定位器（能穿透 shadow DOM），不用 document.querySelectorAll
+      * 无条件把目标滚进视野——_first_visible 只看盒子非零，【屏幕外的元素也算可见】，
+        写成「找不到才滚」的话一次都不会滚
+      * 验证要看【结果】不是【动作】：判据是「应用内购价值」这几个字从页面上消失
+        且「广告收入价值」出现。不能只看后者出现——下拉展开时两个选项【同时】
+        在页面上，那时候「广告收入价值」也是可见的。
+
+    已经是「广告收入价值」就直接返回，不去点它——这是个下拉不是开关，多点一次
+    虽然不会切回去，但没必要冒险。
+    """
+    from src.pages.common import robust_click, wait_until
+
+    def picked():
+        gone = _first_visible(page.get_by_text(VALUE_TYPE_IAP, exact=True)) is None
+        shown = _first_visible(page.get_by_text(VALUE_TYPE_AD_REVENUE, exact=True)) is not None
+        return gone and shown
+
+    if picked():
+        return
+
+    for attempt in range(3):
+        box = wait_until(
+            page,
+            lambda: _first_visible(page.get_by_text(VALUE_TYPE_IAP, exact=True)),
+            timeout_seconds=25,
+        )
+        if box is None:
+            if picked():
+                return
+            page.wait_for_timeout(1500)
+            continue
+
+        ok = _scroll_into_comfortable_view(page, box)
+        print(f"          [价值类型] 第{attempt + 1}轮：滚动到位={ok}", flush=True)
+        page.wait_for_timeout(400)
+
+        robust_click(page, box, timeout=8000)
+        page.wait_for_timeout(1500)
+
+        opt = wait_until(
+            page,
+            lambda: _first_visible(page.get_by_text(VALUE_TYPE_AD_REVENUE, exact=True)),
+            timeout_seconds=15,
+        )
+        if opt is None:
+            print("          [价值类型] 下拉里没找到「广告收入价值」，重试", flush=True)
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(1000)
+            continue
+
+        row = _option_row_of(page, opt) or opt
+        robust_click(page, row, timeout=8000)
+        page.wait_for_timeout(2000)
+
+        if wait_until(page, picked, timeout_seconds=20):
+            print("          [价值类型] 已选中「广告收入价值」", flush=True)
+            return
+        page.wait_for_timeout(1200)
+
+    raise ValueError(
+        "选「广告收入价值」失败：点了 3 轮，「应用内购价值」这几个字仍在页面上。"
+        "这一步在选完 TikTok Mini 之后、填目标 ROAS 之前。"
+    )
+
+
 # 短剧的 ROAS 输入框。实测 placeholder 是「请您输入广告花费回报（ROAS）下限值」，
 # 但小游戏那边同一个框还出现过「请输入一个值」（TikTok 在做文案灰度），所以用正则
 # 兼容两种，只要带 ROAS 字样或是那句老文案都认。

@@ -3,7 +3,7 @@
 流程：
     确保中文 -> 选「TikTok 即时增长」-> 打开商品库开关 -> 填计划名和预算 -> 继续
     -> 广告组名 -> 选商品库（唯一可见）-> 特定剧集（切ID维度、搜、点圆圈、验证、添加）
-    -> 选 TikTok Mini -> 目标 ROAS -> 地域 -> 继续 -> 广告层选创意素材
+    -> 选 TikTok Mini -> 价值类型改成「广告收入价值」 -> 目标 ROAS -> 地域 -> 继续 -> 广告层选创意素材
 
 短剧从计划名里用最长前缀匹配推出（见 src/drama/series_lookup.py）。
 地域和 ROAS 直接复用小游戏那套，操作一模一样。
@@ -24,6 +24,7 @@ from src.config import ACCEPT_LANGUAGE, LOCALE, LOGS_DIR
 from src.drama.config import DRAMA_BROWSER_PROFILE_DIR
 from src.drama.pages.adgroup_page import (
     add_specific_episode,
+    select_ad_revenue_value_type,
     fill_ad_group_name,
     select_product_catalog,
     select_target_roas_drama,
@@ -181,6 +182,10 @@ def main():
             }""")
             L(f"          -> 优化目标={state['goal']!r} 选择价值类型={state['vt']!r}")
             shot(page, "04_mini")
+
+            mark("选择价值类型 -> 广告收入价值")
+            select_ad_revenue_value_type(page)
+            shot(page, "04b_value_type")
 
             mark(f"填目标 ROAS = {roas}")
             select_target_roas_drama(page, roas)
