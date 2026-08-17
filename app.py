@@ -101,6 +101,28 @@ def _preflight_drama(groups):
     return []
 
 
+def _log_result(mode, publish, campaign_name, result):
+    """把每个计划的结果追加到 logs/web_build.txt。
+
+    网页版原来什么都不落盘，报错只在启动它的终端里滚过去——排查时只能靠使用者
+    截图，截图太大还传不过去。命令行入口一直有 drama_build.txt，网页版也该有。
+    """
+    from src.config import LOGS_DIR
+
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(str(LOGS_DIR / "web_build.txt"), "a", encoding="utf-8") as f:
+            f.write(f"\n=== {campaign_name} ===\n")
+            f.write(f"模式={mode} 发布={'是' if publish else '否'}\n")
+            f.write("结果=" + ("成功" if result.get("success") else "失败") + "\n")
+            if result.get("error"):
+                f.write(f"失败原因: {result['error']}\n")
+            for w in result.get("warnings") or []:
+                f.write(f"  ! {w}\n")
+    except Exception:
+        pass
+
+
 def _run_build(xlsx_path, publish, mode):
     try:
         records = load_rows(xlsx_path)
@@ -165,6 +187,7 @@ def _run_build(xlsx_path, publish, mode):
                     )
                 result["campaign_name"] = campaign_name
                 result["ad_group_count"] = len(rows)
+                _log_result(mode, publish, campaign_name, result)
 
                 with state_lock:
                     run_state["results"].append(result)
@@ -177,9 +200,18 @@ def _run_build(xlsx_path, publish, mode):
             run_state["current"] = None
 
     except Exception:
+        tb = traceback.format_exc()
         with state_lock:
             run_state["status"] = "error"
-            run_state["fatal_error"] = traceback.format_exc()
+            run_state["fatal_error"] = tb
+        try:
+            from src.config import LOGS_DIR
+
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            with open(str(LOGS_DIR / "web_build.txt"), "a", encoding="utf-8") as f:
+                f.write(f"\n=== 整体崩了（mode={mode}）===\n{tb}\n")
+        except Exception:
+            pass
 
 
 @app.route("/")

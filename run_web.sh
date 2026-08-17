@@ -14,7 +14,10 @@ if [ -n "$STALE" ]; then
 fi
 
 echo "Starting server, please wait..."
-venv/bin/python3 app.py &
+# 输出同时写进 logs/webserver.log。网页版原来只把报错打在这个终端里，
+# 出问题只能靠截图传给别人看——截图还可能太大传不过去。写进文件谁都能直接读。
+mkdir -p logs
+venv/bin/python3 -u app.py 2>&1 | tee logs/webserver.log &
 SERVER_PID=$!
 
 sleep 3
