@@ -203,6 +203,37 @@ def fill_ad_group_name(page, ad_group_name, timeout_seconds=60):
         pass
 
 
+def _catalog_section_text(page, limit=120):
+    """读「关联的商品库」这一节当前显示的文字（选好了会是商品库名字）。读不到返回 None。"""
+    try:
+        lab = page.get_by_text("关联的商品库", exact=True)
+        if lab.count() == 0:
+            return None
+        return lab.first.evaluate("""(el, lim) => {
+          const deep = (n) => {
+            let out = '';
+            const walk = (x) => {
+              if (!x) return;
+              if (x.nodeType === 3) { out += x.textContent; return; }
+              if (x.tagName === 'SLOT') { for (const a of x.assignedNodes()) walk(a); return; }
+              if (x.shadowRoot) { walk(x.shadowRoot); return; }
+              for (const c of x.childNodes || []) walk(c);
+            };
+            walk(n);
+            return out.replace(/\\s+/g, ' ').trim();
+          };
+          let box = el.parentElement;
+          for (let k = 0; k < 5 && box; k++) {
+            const t = deep(box).replace('关联的商品库', '').trim();
+            if (t) return t.slice(0, lim);
+            box = box.parentElement;
+          }
+          return null;
+        }""", limit)
+    except Exception:
+        return None
+
+
 def select_product_catalog(page, catalog_id=None, timeout_seconds=60):
     """在「关联的商品库」下拉里选中商品库。
 
@@ -216,15 +247,37 @@ def select_product_catalog(page, catalog_id=None, timeout_seconds=60):
     """
     from src.pages.common import click_to_open, wait_until
 
-    trigger = wait_until(
+    # 先等「商品库」这一节渲染出来，再判断要不要选。
+    # 不能一上来就死等占位文字：商品库和 TikTok Mini / ROAS / 地域一样，
+    # 会随着账号里已发布的计划变多而【自动带值】。带值时占位文字「请选择商品库」
+    # 根本不出现，死等就是白等满 60 秒然后报一句误导的错（说「开关没打开」，
+    # 其实开关好好的、商品库也好好的，只是已经填上了）。
+    # 今天 Mini、价值类型、ROAS、地域都补过这个「已经对了就跳过」的分支，
+    # 只有商品库漏了——这是同一个坑的第五次。
+    wait_until(
         page,
-        lambda: _first_visible(page.get_by_text(CATALOG_PLACEHOLDER, exact=True)),
+        lambda: page.get_by_text("关联的商品库", exact=True).count() > 0,
         timeout_seconds=timeout_seconds,
     )
+
+    trigger = _first_visible(page.get_by_text(CATALOG_PLACEHOLDER, exact=True))
     if not trigger:
+        trigger = wait_until(
+            page,
+            lambda: _first_visible(page.get_by_text(CATALOG_PLACEHOLDER, exact=True)),
+            timeout_seconds=20,
+        )
+    if not trigger:
+        # 占位文字不在，可能是【已经选好了】。把这一节的实际内容读出来判断，
+        # 而不是直接报错。
+        shown = _catalog_section_text(page)
+        if shown and CATALOG_PLACEHOLDER not in shown:
+            print(f"          [商品库] 已经选好了（{shown[:40]!r}），不用再选", flush=True)
+            return
         raise ValueError(
-            f"等了 {timeout_seconds} 秒没看到「{CATALOG_PLACEHOLDER}」下拉。"
-            "确认计划层的「设置商品库推广系列」开关已经打开——不打开就没有这一节。"
+            f"等了 {timeout_seconds} 秒既没看到「{CATALOG_PLACEHOLDER}」下拉，"
+            f"也读不出已选的商品库。「商品库」这一节现在的内容: {shown!r}\n"
+            "如果这一节整个不存在，检查计划层的「设置商品库推广系列」开关有没有打开。"
         )
     trigger.scroll_into_view_if_needed(timeout=5000)
     click_to_open(trigger, timeout=10000)
