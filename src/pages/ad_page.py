@@ -358,7 +358,17 @@ def select_creative_materials(page, search_term: str, count: int, used_ids=None)
     # nothing, since it's never Playwright-"visible"
     checkboxes = lib_pane.get_by_role("checkbox")
 
-    # 先确认卡片上的身份标识确实唯一，不唯一就直接中止（见 _assert_identity_usable）
+    # 搜索没有结果时要单独说清楚，别混进下面那个「读不出身份标识」的报错里。
+    # 那句话会让人以为是识别逻辑坏了，实际是这个搜索词在库里一个素材都没有
+    # （实测：某个剧还没上素材，搜剧名 0 结果，报错却说「读不出身份标识」，
+    # 白排查了一轮）。
+    if checkboxes.count() == 0:
+        raise ValueError(
+            f"素材库里搜 {search_term!r} 没有任何结果——这个搜索词在当前账号的"
+            "创意素材库里一个素材都没有。先确认素材已经上传、名字里确实带这个词。"
+        )
+
+    # 再确认卡片上的身份标识确实唯一，不唯一就直接中止（见 _assert_identity_usable）
     sample_id = _assert_identity_usable(page, checkboxes, checkboxes.count())
 
     picked = []          # 本条广告已选中的素材身份（有序，便于排查）
