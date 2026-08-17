@@ -44,37 +44,124 @@ def select_drama_creatives(page, series_name, count, used_ids=None):
     )
 
 
-def fill_drama_ad_copy(page, ads_text):
-    """填文案，填完【回读确认】。占位文字实测和小游戏一致（「输入文案」）。
+def _first_visible_input(page, locator, what, timeout_seconds=60):
+    """取第一个【可见】的匹配输入框，并返回那个具体元素。
 
-    回读这一步不能省：这一页输入框不止一个，填错地方不会报任何错。
-    本项目反复吃过「验证动作而不是验证结果」的亏（点了就当成功、改了就当对）。
+    为什么不能用 .first：一个广告组里有多个广告时，DOM 里会同时存在好几个占位符
+    相同的输入框（当前广告的可见，其他广告的隐藏）。.first 拿到的可能是隐藏的那个，
+    fill() 填进去页面上什么都不会变。
+
+    实测就是这么错的：URL 用 field.first.fill() 填到了隐藏的框上，而回读时又是
+    「找第一个可见的」——两者不是同一个元素，于是【回读通过、页面上却是空的】，
+    平台在发布时报缺少 URL。加了验证反而把问题掩盖了。
+    所以填和读必须锁定同一个元素，这个函数就是用来拿到那个元素的。
     """
-    from src.pages.ad_page import fill_ad_copy
+    from src.pages.common import wait_until
 
-    fill_ad_copy(page, ads_text)
-    got = _read_value(page, page.get_by_placeholder("输入文案"))
-    if got is not None and got.strip() != (ads_text or "").strip():
-        raise ValueError(f"文案填完读回的是 {got[:60]!r}，期望 {ads_text[:60]!r}")
+    def pick():
+        try:
+            n = locator.count()
+        except Exception:
+            return None
+        for i in range(min(n, 12)):
+            el = locator.nth(i)
+            try:
+                if el.is_visible():
+                    return el
+            except Exception:
+                continue
+        return None
+
+    el = wait_until(page, pick, timeout_seconds=timeout_seconds)
+    if el is None:
+        raise ValueError(f"等了 {timeout_seconds} 秒没找到可见的{what}")
+    return el
+
+
+def _commit(page, el):
+    """让输入框失焦，把值真正提交给组件。
+
+    使用者实测发现的：填完 URL 之后必须点一下框附近，值才会被保存；
+    而且不能点左侧的广告列表——点那里不保存。原因是 fill() 只把值写进 DOM，
+    组件是在 blur / change 时才把值收进自己的状态，平台发布时读的是组件状态。
+
+    这也是为什么【回读验证检测不出这个问题】：input_value() 读的是 DOM 里的值，
+    一直是对的，但组件里是空的，所以发布时平台报缺少 URL。加了验证反而给了
+    假的安全感——这个坑值得记住：回读只能证明「写进去了」，不能证明「被接住了」。
+
+    用 Tab 键失焦而不是去点某个坐标：效果和点空白处一样，但不会误点到别的控件
+    （尤其是左侧列表）上。再补一次显式的 change + blur 事件兜底。
+    """
+    try:
+        page.keyboard.press("Tab")
+    except Exception:
+        pass
+    page.wait_for_timeout(500)
+    try:
+        el.evaluate("""e => {
+          e.dispatchEvent(new Event('input', {bubbles: true}));
+          e.dispatchEvent(new Event('change', {bubbles: true}));
+          if (e.blur) e.blur();
+        }""")
+    except Exception:
+        pass
+    page.wait_for_timeout(400)
+
+
+def _fill_and_verify(page, locator, value, what):
+    """填一个输入框并回读确认——填和读【同一个元素】，见 _first_visible_input。"""
+    el = _first_visible_input(page, locator, what)
+    try:
+        el.scroll_into_view_if_needed(timeout=8000)
+    except Exception:
+        pass
+    page.wait_for_timeout(300)
+    try:
+        el.click(timeout=8000)
+    except Exception:
+        pass
+    el.fill("")
+    el.fill(str(value))
+    page.wait_for_timeout(500)
+    _commit(page, el)
+
+    got = None
+    try:
+        got = el.input_value(timeout=3000)
+    except Exception:
+        pass
+    if got is not None and got.strip() != str(value).strip():
+        # 再填一次：有时组件把第一次输入吞掉了
+        el.fill("")
+        el.fill(str(value))
+        page.wait_for_timeout(600)
+        _commit(page, el)
+        try:
+            got = el.input_value(timeout=3000)
+        except Exception:
+            got = None
+    if got is not None and got.strip() != str(value).strip():
+        raise ValueError(
+            f"{what}填完读回的是 {str(got)[:80]!r}，期望 {str(value)[:80]!r}"
+        )
+
+
+def fill_drama_ad_copy(page, ads_text):
+    """填文案，填完回读确认（填和读同一个元素）。占位文字「输入文案」。"""
+    _fill_and_verify(page, page.get_by_placeholder("输入文案"), ads_text, "文案")
 
 
 def fill_drama_minis_url(page, url):
-    """填 TikTok Minis URL，填完【回读确认】。占位实测一致（https://www.tiktok.com/minis/）。"""
-    from src.pages.ad_page import fill_landing_url
+    """填 TikTok Minis URL，填完回读确认（填和读同一个元素）。
 
-    fill_landing_url(page, url)
-    got = _read_value(page, page.get_by_placeholder("https://www.tiktok.com/minis/"))
-    if got is not None and got.strip() != (url or "").strip():
-        raise ValueError(f"Minis URL 填完读回的是 {got!r}，期望 {url!r}")
+    这里必须自己找「第一个可见的」输入框，不能复用小游戏的 fill_landing_url——
+    那个函数用的是 .first，在一个广告组有多个广告时会填到隐藏的框上去。
+    """
+    _fill_and_verify(
+        page,
+        page.get_by_placeholder("https://www.tiktok.com/minis/"),
+        url,
+        "TikTok Minis URL",
+    )
 
 
-def _read_value(loc_page, loc):
-    """读输入框当前的值。读不出来返回 None（区别于「读到了空字符串」）。"""
-    try:
-        for i in range(min(loc.count(), 5)):
-            el = loc.nth(i)
-            if el.is_visible():
-                return el.input_value(timeout=3000)
-    except Exception:
-        return None
-    return None

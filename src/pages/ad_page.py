@@ -217,7 +217,31 @@ def _scroll_library_to_bottom(page, tiles):
 
 
 def wait_ad_page_ready(page):
-    page.get_by_text("创意素材", exact=True).wait_for(state="visible", timeout=90000)
+    """等广告层页面就绪。
+
+    不能用 get_by_text("创意素材")：这四个字页面上有【两个】——
+      1) 真正的区块标题  data-testid="creative-assets-header-title"
+      2) 右侧「建议采纳情况」里的检查项（#sppFormRightSideBarContainer 内）
+    命中两个时 Playwright 的 strict mode 会直接抛
+    「strict mode violation: ... resolved to 2 elements」。这个 bug 一直潜伏着，
+    以前靠右侧清单渲染得比标题慢侥幸过关；复制广告之后右侧清单已经在了，就必炸。
+
+    所以锚定那个稳定的 data-testid（自定义标签名 ks-text-* 每次加载都随机，
+    但 data-testid 稳定），找不到才退回按文字取第一个可见的。
+    """
+    header = page.get_by_test_id("creative-assets-header-title")
+    try:
+        if header.count() > 0:
+            header.first.wait_for(state="visible", timeout=90000)
+        else:
+            page.get_by_text("创意素材", exact=True).first.wait_for(
+                state="visible", timeout=90000
+            )
+    except Exception:
+        # 退一步：只要页面上有这四个字就算就绪，别在等待上卡死整条流程
+        page.get_by_text("创意素材", exact=True).first.wait_for(
+            state="visible", timeout=30000
+        )
     page.wait_for_timeout(1000)
 
 
