@@ -45,6 +45,7 @@ from src.pages.campaign_page import (
 )
 from src.pages.adgroup_page import wait_adgroup_page_ready
 from src.pages.common import exit_draft
+from src.pages.duplicate import duplicate_ad_n_times
 from src.region_lookup import resolve_regions
 
 
@@ -73,6 +74,27 @@ def _extra_copies(rec):
         return int(val) if val not in (None, "") else 0
     except (TypeError, ValueError):
         return 0
+
+
+_AD_COUNT_KEYS = ("Ad Number", "Ads Number", "Ad Name Number", "ad_number", "广告数量")
+
+
+def _ads_per_group(rec):
+    """一个广告组里要建几个【广告】。空/读不出/小于 1 都当作 1。
+
+    这一列由使用者手填，叫法不固定，所以几种写法都认（对应
+    excel_loader.OPTIONAL_COLUMNS 里登记的那几个）。注意 load_rows 会把没登记的列
+    整列丢掉，所以列名必须先在那边登记，否则这里永远读到 None——而且很难发现。
+    """
+    for k in _AD_COUNT_KEYS:
+        v = rec.get(k)
+        if v in (None, ""):
+            continue
+        try:
+            return max(int(v), 1)
+        except (TypeError, ValueError):
+            continue
+    return 1
 
 
 def build_drama_campaign(
@@ -211,35 +233,71 @@ def build_drama_campaign(
             continue_step(page)
             wait_ad_page_ready(page)
 
-            # 素材按 (广告主, 剧名) 分桶去重，整次运行共用同一个集合：
-            # 同一个计划下的第 2、3… 个广告组不会选到前面用过的素材，
-            # 整个库用完了才绕回头复用。
-            used = creative_usage.setdefault((str(advertiser_id), series_name), set())
-            before = len(used)
-            print(f"      选素材：搜 {(search_override or series_name)!r}，"
-                  f"要 {_creative_count(rec)} 个（已用过 {len(used)} 个）", flush=True)
-            picked, wrapped = select_drama_creatives(
-                page, search_override or series_name, _creative_count(rec),
-                used_ids=used
-            )
-            want = _creative_count(rec)
-            print(f"      选到 {picked} 个素材，去重集合现在 {len(used)} 个", flush=True)
-            if picked < want:
-                warnings.append(f"[{tag}] 只选到 {picked} 个素材，少于要求的 {want} 个")
-            if wrapped:
-                warnings.append(
-                    f"[{tag}] 素材库不够用，已绕回头复用之前用过的素材"
-                )
-            elif len(used) - before < picked:
-                warnings.append(
-                    f"[{tag}] 选中 {picked} 个素材，但去重集合只新增了 "
-                    f"{len(used) - before} 个——可能选到了重复素材，请人工核对"
-                )
+            # ---------- 广告层 ----------
+            # 一个广告组下可能要建多个广告（表格 Ad Number），而且【每个广告的素材
+            # 必须不同】——所以不能只靠复制了事，复制出来素材是一样的。
+            #
+            # 使用者给了两条路，采用第 1 条【先复制，再逐个填完整内容】：
+            #   1. 先按数量复制广告层，然后每个广告：选素材 -> 文案 -> URL ->
+            #      点「继续」自动跳到下一个广告。最后一个广告右下角没有「继续」，
+            #      只有「发布」。
+            #   2. 先填文案和 URL 再复制，副本带着文案和 URL，每个副本只选素材。
+            #
+            # 第 2 条看着省事（文案和 URL 只填一次），但它要求在【选素材之前】就滚到
+            # 页面下方去填文案和 URL——那是一条没验证过的新路径，而滚动是这个项目
+            # 最容易翻车的地方（今天已经在滚动上错了好几轮）。第 1 条里每个广告走的
+            # 是「选素材 -> 文案 -> URL」这条【已经跑通过的顺序】，只是重复 N 次。
+            # 使用者也是这么建议的。
+            ads_n = _ads_per_group(rec)
 
-            # 身份（TikTok 账号）不碰：选完素材后 TikTok 会自动填好，
-            # 页面上也写着「自定义身份已不再可用」，动它只有改错的风险。
-            fill_drama_ad_copy(page, str(rec.get("ads_text") or "").strip())
-            fill_drama_minis_url(page, str(rec.get("TT Mini URL") or "").strip())
+            if ads_n > 1:
+                print(f"      这个广告组要建 {ads_n} 个广告，先复制 {ads_n - 1} 份",
+                      flush=True)
+                duplicate_ad_n_times(page, ads_n - 1)
+                page.wait_for_timeout(3000)
+
+            used = creative_usage.setdefault((str(advertiser_id), series_name), set())
+            want = _creative_count(rec)
+            for k in range(ads_n):
+                before = len(used)
+                print(f"      广告 {k + 1}/{ads_n} 选素材：搜 "
+                      f"{(search_override or series_name)!r}，要 {want} 个"
+                      f"（已用过 {len(used)} 个）", flush=True)
+                picked, wrapped = select_drama_creatives(
+                    page, search_override or series_name, want, used_ids=used
+                )
+                print(f"      广告 {k + 1}/{ads_n} 选到 {picked} 个，"
+                      f"去重集合现在 {len(used)} 个", flush=True)
+                if picked < want:
+                    warnings.append(
+                        f"[{tag}] 广告 {k + 1}/{ads_n} 只选到 {picked} 个素材，"
+                        f"少于要求的 {want} 个"
+                    )
+                if wrapped:
+                    warnings.append(
+                        f"[{tag}] 广告 {k + 1}/{ads_n}: 素材库不够用，"
+                        "已绕回头复用之前用过的素材"
+                    )
+                elif len(used) - before < picked:
+                    warnings.append(
+                        f"[{tag}] 广告 {k + 1}/{ads_n} 选中 {picked} 个素材，但去重集合"
+                        f"只新增了 {len(used) - before} 个——可能选到了重复素材，"
+                        "请人工核对"
+                    )
+
+                # 身份（TikTok 账号）不碰：选完素材后 TikTok 会自动填好，
+                # 页面上也写着「自定义身份已不再可用」，动它只有改错的风险。
+                fill_drama_ad_copy(page, str(rec.get("ads_text") or "").strip())
+                fill_drama_minis_url(page, str(rec.get("TT Mini URL") or "").strip())
+
+                if k < ads_n - 1:
+                    # 点「继续」自动跳到同一个广告组里的下一个广告。
+                    # 最后一个广告没有「继续」只有「发布」，所以只在不是最后一个时点。
+                    print(f"      广告 {k + 1}/{ads_n} 填完，点「继续」跳到下一个广告",
+                          flush=True)
+                    continue_step(page)
+                    wait_ad_page_ready(page)
+                    page.wait_for_timeout(1500)
 
             if publish:
                 # 每个广告组建完就发布。新流程必须这样——发布完页面才会回到

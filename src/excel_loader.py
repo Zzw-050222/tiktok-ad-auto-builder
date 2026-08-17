@@ -27,12 +27,22 @@ REQUIRED_COLUMNS = [
 #   "自动选择" (auto-select) creative behavior as-is (the long-standing
 #   default for <=2 or blank) - doubles as both the on/off switch and the
 #   count, so no separate toggle column is needed
+# - Ad Number（同义写法都认，见下面几个）: 一个广告组里要建几个【广告】。
+#   短剧专用：>1 时在同一个广告组下建多个广告，每个广告选【不同】的素材
+#   （不是单纯复制内容——复制出来素材会一样）。空或 1 表示只建一个广告。
+#   多写几种拼法是因为这一列由使用者手填，叫法不固定；load_rows 会把不在这个
+#   名单里的列【整列丢掉】，名字对不上就等于这一列不存在，还很难发现。
 OPTIONAL_COLUMNS = [
     "Business Center Account ID",
     "optimization_event",
     "Ad Group Name Number",
     "CreativeFile",
     "Creative Number",
+    "Ad Number",
+    "Ads Number",
+    "Ad Name Number",
+    "ad_number",
+    "广告数量",
 ]
 
 
