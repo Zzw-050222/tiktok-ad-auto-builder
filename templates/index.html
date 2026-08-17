@@ -2,171 +2,372 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>TikTok 广告自动搭建工具</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TikTok 广告自动搭建</title>
 <style>
   :root {
-    --bg: #0f1115;
-    --panel: #171a21;
-    --border: #2a2f3a;
-    --text: #e6e8ec;
-    --muted: #8b93a3;
+    --bg: #0b0d12;
+    --panel: #14171f;
+    --panel-2: #1a1e28;
+    --border: #262b36;
+    --border-soft: #1f242e;
+    --text: #e8eaf0;
+    --muted: #8a93a6;
+    --faint: #5c6478;
     --accent: #2f8fff;
-    --ok: #2fbf71;
-    --err: #ff5c5c;
-    --warn: #e8b339;
+    --accent-soft: rgba(47, 143, 255, .12);
+    --ok: #34d399;
+    --ok-bg: rgba(52, 211, 153, .1);
+    --err: #f87171;
+    --err-bg: rgba(248, 113, 113, .1);
+    --warn: #fbbf24;
+    --radius: 14px;
   }
   * { box-sizing: border-box; }
+  html { -webkit-font-smoothing: antialiased; }
   body {
     margin: 0;
-    font-family: -apple-system, "Microsoft YaHei", "PingFang SC", sans-serif;
-    background: var(--bg);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC",
+                 "Microsoft YaHei", system-ui, sans-serif;
+    background:
+      radial-gradient(900px 500px at 50% -10%, rgba(47, 143, 255, .07), transparent 70%),
+      var(--bg);
     color: var(--text);
-    padding: 32px 16px 80px;
+    padding: 44px 20px 96px;
+    line-height: 1.55;
   }
-  .wrap { max-width: 780px; margin: 0 auto; }
-  h1 { font-size: 22px; margin-bottom: 4px; }
-  .sub { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
+  .wrap { max-width: 760px; margin: 0 auto; }
+
+  header { margin-bottom: 30px; }
+  h1 {
+    font-size: 25px;
+    font-weight: 650;
+    letter-spacing: -.3px;
+    margin: 0 0 6px;
+  }
+  .sub { color: var(--muted); font-size: 13.5px; }
 
   .card {
     background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 20px;
-    margin-bottom: 20px;
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+    padding: 22px;
+    margin-bottom: 18px;
   }
-  .card h2 { font-size: 15px; margin: 0 0 14px; color: var(--muted); font-weight: 600; }
+  .card-title {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    margin: 0 0 16px;
+    letter-spacing: .2px;
+  }
+  .step-num {
+    width: 20px; height: 20px;
+    border-radius: 6px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 11.5px;
+    font-weight: 700;
+    display: grid;
+    place-items: center;
+    flex: none;
+  }
 
+  /* ---------- 模式切换 ---------- */
+  .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .mode {
+    position: relative;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    border-radius: 11px;
+    padding: 14px 15px;
+    cursor: pointer;
+    transition: border-color .16s, background .16s, transform .1s;
+  }
+  .mode:hover { border-color: #38404f; }
+  .mode:active { transform: scale(.995); }
+  .mode.on {
+    border-color: var(--accent);
+    background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--panel-2);
+  }
+  .mode-name { font-size: 14.5px; font-weight: 600; margin-bottom: 3px; }
+  .mode-desc { font-size: 12px; color: var(--muted); }
+  .mode .tick {
+    position: absolute; top: 13px; right: 13px;
+    width: 15px; height: 15px; border-radius: 50%;
+    border: 1.5px solid var(--border);
+    transition: .16s;
+  }
+  .mode.on .tick {
+    border-color: var(--accent);
+    background: var(--accent);
+    box-shadow: inset 0 0 0 3px var(--panel-2);
+  }
+
+  /* ---------- 上传 ---------- */
   .dropzone {
-    border: 2px dashed var(--border);
-    border-radius: 10px;
-    padding: 28px 16px;
+    border: 1.5px dashed var(--border);
+    border-radius: 11px;
+    padding: 26px 18px;
     text-align: center;
     cursor: pointer;
-    transition: border-color .15s;
+    transition: border-color .16s, background .16s;
   }
-  .dropzone:hover, .dropzone.drag { border-color: var(--accent); }
+  .dropzone:hover, .dropzone.drag {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
   .dropzone input { display: none; }
-  .dropzone .hint { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  .dz-main { font-size: 14px; font-weight: 500; }
+  .dz-hint { color: var(--faint); font-size: 12px; margin-top: 5px; }
 
-  .file-info {
-    display: none;
-    margin-top: 14px;
-    padding: 12px 14px;
-    background: #10261a;
-    border: 1px solid #1f4a30;
-    border-radius: 8px;
-    font-size: 13px;
-    color: #8fe6b0;
+  .cols {
+    margin-top: 12px;
+    font-size: 11.5px;
+    color: var(--faint);
+    line-height: 1.7;
   }
-  .file-error {
-    display: none;
-    margin-top: 14px;
-    padding: 12px 14px;
-    background: #2a1414;
-    border: 1px solid #5a2222;
-    border-radius: 8px;
-    font-size: 13px;
-    color: #ff9a9a;
-  }
+  .cols b { color: var(--muted); font-weight: 600; }
 
-  .row { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
-  label.check { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text); cursor: pointer; }
+  .note {
+    display: none;
+    margin-top: 13px;
+    padding: 11px 13px;
+    border-radius: 9px;
+    font-size: 13px;
+    border: 1px solid transparent;
+  }
+  .note.ok  { background: var(--ok-bg);  border-color: rgba(52,211,153,.25);  color: var(--ok); }
+  .note.err { background: var(--err-bg); border-color: rgba(248,113,113,.25); color: var(--err); }
+  .note.warn{ background: rgba(251,191,36,.09); border-color: rgba(251,191,36,.25); color: var(--warn); }
+
+  /* ---------- 发布开关 ---------- */
+  .switch-row {
+    display: flex; align-items: flex-start; gap: 12px;
+    margin-top: 18px; padding-top: 18px;
+    border-top: 1px solid var(--border-soft);
+  }
+  .switch { position: relative; flex: none; width: 40px; height: 23px; margin-top: 1px; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider {
+    position: absolute; inset: 0;
+    background: #2b313d; border-radius: 999px;
+    cursor: pointer; transition: background .18s;
+  }
+  .slider::before {
+    content: ""; position: absolute;
+    width: 17px; height: 17px; left: 3px; top: 3px;
+    background: #fff; border-radius: 50%;
+    transition: transform .18s;
+  }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider::before { transform: translateX(17px); }
+  .switch-text { font-size: 13.5px; cursor: pointer; }
+  .switch-text .warn-inline { color: var(--warn); }
+  .switch-text .sub2 { color: var(--faint); font-size: 12px; margin-top: 2px; }
 
   button.run {
+    width: 100%;
     background: var(--accent);
-    color: white;
-    border: none;
-    border-radius: 8px;
-    padding: 12px 22px;
-    font-size: 15px;
-    font-weight: 600;
+    color: #fff; border: 0;
+    border-radius: 10px;
+    padding: 13px;
+    font-size: 15px; font-weight: 600;
     cursor: pointer;
     margin-top: 18px;
+    transition: filter .15s, background .15s;
   }
-  button.run:disabled { background: #2b3542; color: #6b7280; cursor: not-allowed; }
-  button.run:hover:not(:disabled) { filter: brightness(1.1); }
+  button.run:hover:not(:disabled) { filter: brightness(1.12); }
+  button.run:disabled { background: #232a35; color: #5c6478; cursor: not-allowed; }
 
-  .progress-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
-  .progress-count { font-size: 20px; font-weight: 700; }
-  .progress-status { font-size: 13px; color: var(--muted); }
-  .bar-bg { height: 8px; background: #22262f; border-radius: 999px; overflow: hidden; margin-bottom: 14px; }
-  .bar-fill { height: 100%; background: var(--accent); width: 0%; transition: width .3s; }
-  .current-line { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
-
-  .result-item {
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 10px 14px;
-    margin-bottom: 8px;
-    font-size: 13px;
+  /* ---------- 进度 ---------- */
+  .prog-head {
+    display: flex; justify-content: space-between;
+    align-items: baseline; margin-bottom: 11px;
   }
-  .result-item .head { display: flex; justify-content: space-between; align-items: center; }
-  .badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
-  .badge.ok { background: #10261a; color: var(--ok); }
-  .badge.err { background: #2a1414; color: var(--err); }
-  .warn-list { margin: 8px 0 0; padding-left: 18px; color: var(--warn); font-size: 12.5px; }
-  .err-text { margin: 8px 0 0; color: var(--err); font-size: 12.5px; white-space: pre-wrap; }
+  .prog-count { font-size: 21px; font-weight: 700; letter-spacing: -.4px; }
+  .pill {
+    font-size: 11.5px; font-weight: 600;
+    padding: 3px 9px; border-radius: 999px;
+    background: var(--panel-2); color: var(--muted);
+  }
+  .pill.running { background: var(--accent-soft); color: var(--accent); }
+  .pill.done { background: var(--ok-bg); color: var(--ok); }
+  .pill.error { background: var(--err-bg); color: var(--err); }
+  .bar-bg { height: 6px; background: #1d222c; border-radius: 999px; overflow: hidden; }
+  .bar-fill {
+    height: 100%; width: 0%;
+    background: linear-gradient(90deg, var(--accent), #61b0ff);
+    border-radius: 999px;
+    transition: width .35s ease;
+  }
+  .current {
+    font-size: 12.5px; color: var(--muted);
+    margin-top: 11px; display: flex; align-items: center; gap: 7px;
+  }
+  .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent); flex: none;
+    animation: pulse 1.3s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
 
-  .fatal { background: #2a1414; border: 1px solid #5a2222; border-radius: 8px; padding: 14px; color: #ff9a9a; font-size: 13px; white-space: pre-wrap; }
+  .results { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
+  .item {
+    border: 1px solid var(--border-soft);
+    background: var(--panel-2);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+  .item-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .item-name { font-size: 13.5px; font-weight: 500; word-break: break-all; }
+  .item-meta { color: var(--faint); font-size: 12px; font-weight: 400; }
+  .badge { font-size: 11.5px; font-weight: 600; padding: 3px 9px; border-radius: 999px; flex: none; }
+  .badge.ok  { background: var(--ok-bg);  color: var(--ok); }
+  .badge.err { background: var(--err-bg); color: var(--err); }
+  .warns { margin: 9px 0 0; padding-left: 17px; color: var(--warn); font-size: 12.5px; }
+  .warns li { margin-bottom: 3px; }
+  .errtext {
+    margin-top: 9px; padding: 9px 11px;
+    background: var(--err-bg); border-radius: 7px;
+    color: var(--err); font-size: 12.5px; white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .fatal {
+    background: var(--err-bg);
+    border: 1px solid rgba(248,113,113,.25);
+    border-radius: 10px; padding: 13px;
+    color: var(--err); font-size: 12.5px;
+    white-space: pre-wrap; overflow-x: auto;
+    margin-top: 14px;
+  }
+  .empty { color: var(--faint); font-size: 13px; text-align: center; padding: 14px 0; }
 
-  .empty-hint { color: var(--muted); font-size: 13px; }
+  @media (max-width: 560px) {
+    body { padding: 28px 14px 60px; }
+    .modes { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>TikTok 广告自动搭建工具</h1>
-  <div class="sub">上传表格 → 点击运行 → 自动搭建计划/广告组/广告</div>
+  <header>
+    <h1>TikTok 广告自动搭建</h1>
+    <div class="sub">选模式 → 上传表格 → 自动搭建计划、广告组和广告</div>
+  </header>
 
   <div class="card">
-    <h2>第一步：上传表格</h2>
+    <div class="card-title"><span class="step-num">1</span>选择搭建类型</div>
+    <div class="modes">
+      <div class="mode on" data-mode="minigame">
+        <div class="tick"></div>
+        <div class="mode-name">小游戏</div>
+        <div class="mode-desc">TikTok 即时增长 · 小游戏投放</div>
+      </div>
+      <div class="mode" data-mode="drama">
+        <div class="tick"></div>
+        <div class="mode-name">短剧商品库</div>
+        <div class="mode-desc">商品库推广系列 · 按短剧ID关联剧集</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><span class="step-num">2</span>上传表格</div>
     <div class="dropzone" id="dropzone">
-      <div>点击选择 .xlsx 文件，或把文件拖到这里</div>
-      <div class="hint">需要包含：Campaign Name, Budget, Advertiser ID, Ad Group Name, TT Mini ID, roas_bid, TT Mini URL, Region, Mini Game Name, ads_text, Identity_ID（Business Center Account ID / optimization_event / Ad Group Name Number 可选，没有也行）</div>
+      <div class="dz-main">点击选择 .xlsx 文件，或拖到这里</div>
+      <div class="dz-hint">每次上传会覆盖上一份</div>
       <input type="file" id="fileInput" accept=".xlsx">
     </div>
-    <div class="file-info" id="fileInfo"></div>
-    <div class="file-error" id="fileError"></div>
+    <div class="cols" id="colsHint"></div>
+    <div class="note ok"   id="noteOk"></div>
+    <div class="note err"  id="noteErr"></div>
+    <div class="note warn" id="noteWarn"></div>
+  </div>
 
-    <div class="row">
-      <label class="check">
+  <div class="card">
+    <div class="card-title"><span class="step-num">3</span>运行</div>
+    <div class="switch-row">
+      <label class="switch">
         <input type="checkbox" id="publishCheck" checked>
-        运行完成后自动发布（会真实开始投放花钱；不勾选则只搭建到草稿，需要你自己手动点发布）
+        <span class="slider"></span>
+      </label>
+      <label class="switch-text" for="publishCheck">
+        搭建完成后<span class="warn-inline">自动发布</span>
+        <div class="sub2" id="publishHint">会真实开始投放并花钱。关掉则只搭到草稿，需要你自己去后台点「全部发布」。</div>
       </label>
     </div>
-
     <button class="run" id="runBtn" disabled>开始搭建</button>
   </div>
 
   <div class="card" id="progressCard" style="display:none;">
-    <h2>进度</h2>
-    <div class="progress-head">
-      <div class="progress-count" id="progressCount">0 / 0</div>
-      <div class="progress-status" id="progressStatus"></div>
+    <div class="card-title">进度</div>
+    <div class="prog-head">
+      <div class="prog-count" id="progCount">0 / 0</div>
+      <div class="pill" id="progPill">未开始</div>
     </div>
     <div class="bar-bg"><div class="bar-fill" id="barFill"></div></div>
-    <div class="current-line" id="currentLine"></div>
+    <div class="current" id="current" style="display:none;"></div>
     <div id="fatalBox"></div>
-    <div id="resultList"></div>
+    <div class="results" id="results"></div>
   </div>
 </div>
 
 <script>
-const dropzone = document.getElementById('dropzone');
-const fileInput = document.getElementById('fileInput');
-const fileInfo = document.getElementById('fileInfo');
-const fileError = document.getElementById('fileError');
-const runBtn = document.getElementById('runBtn');
-const publishCheck = document.getElementById('publishCheck');
-const progressCard = document.getElementById('progressCard');
-const progressCount = document.getElementById('progressCount');
-const progressStatus = document.getElementById('progressStatus');
-const barFill = document.getElementById('barFill');
-const currentLine = document.getElementById('currentLine');
-const resultList = document.getElementById('resultList');
-const fatalBox = document.getElementById('fatalBox');
+const $ = id => document.getElementById(id);
+const dropzone = $('dropzone'), fileInput = $('fileInput'), runBtn = $('runBtn');
+const noteOk = $('noteOk'), noteErr = $('noteErr'), noteWarn = $('noteWarn');
+const publishCheck = $('publishCheck'), colsHint = $('colsHint');
+const progressCard = $('progressCard'), progCount = $('progCount'), progPill = $('progPill');
+const barFill = $('barFill'), current = $('current');
+const results = $('results'), fatalBox = $('fatalBox');
 
+const REQUIRED = 'Campaign Name、Budget、Advertiser ID、Ad Group Name、TT Mini ID、'
+  + 'roas_bid、TT Mini URL、Region、Mini Game Name、ads_text、Identity_ID';
+
+const MODE_INFO = {
+  minigame: {
+    cols: `<b>必填列</b>：${REQUIRED}<br><b>可选列</b>：Business Center Account ID、`
+      + `optimization_event、Ad Group Name Number（复制份数）、CreativeFile、`
+      + `Creative Number（>2 时改为手动搜索挑素材）`,
+  },
+  drama: {
+    cols: `<b>必填列</b>：${REQUIRED}<br><b>可选列</b>：Ad Group Name Number（复制份数）、`
+      + `Creative Number（要挑几个素材，默认 1）<br>`
+      + `<b>短剧另需</b>：计划名开头是剧名，用来在「商品库-剧目.xlsx」里查短剧ID；`
+      + `素材按剧名在素材库搜索`,
+  },
+};
+
+let mode = 'minigame';
 let uploaded = false;
 let pollTimer = null;
+
+function renderModeInfo() {
+  colsHint.innerHTML = MODE_INFO[mode].cols;
+}
+renderModeInfo();
+
+document.querySelectorAll('.mode').forEach(el => {
+  el.addEventListener('click', () => {
+    document.querySelectorAll('.mode').forEach(m => m.classList.remove('on'));
+    el.classList.add('on');
+    mode = el.dataset.mode;
+    renderModeInfo();
+    // 换模式后要重新上传：表格的校验（比如短剧要查剧名）跟模式有关
+    uploaded = false;
+    runBtn.disabled = true;
+    hideNotes();
+  });
+});
+
+function hideNotes() {
+  [noteOk, noteErr, noteWarn].forEach(n => n.style.display = 'none');
+}
+function showNote(el, text) { el.textContent = text; el.style.display = 'block'; }
 
 dropzone.addEventListener('click', () => fileInput.click());
 dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag'); });
@@ -184,51 +385,58 @@ fileInput.addEventListener('change', () => {
 });
 
 function doUpload(file) {
-  fileInfo.style.display = 'none';
-  fileError.style.display = 'none';
+  hideNotes();
   const form = new FormData();
   form.append('file', file);
+  form.append('mode', mode);
   fetch('/upload', { method: 'POST', body: form })
     .then(r => r.json())
     .then(data => {
-      if (data.ok) {
-        uploaded = true;
-        fileInfo.textContent = `已上传: ${data.filename} — 共 ${data.row_count} 行，${data.campaign_count} 个计划`;
-        fileInfo.style.display = 'block';
-        runBtn.disabled = false;
-      } else {
-        fileError.textContent = data.error || '上传失败';
-        fileError.style.display = 'block';
+      if (!data.ok) {
+        showNote(noteErr, data.error || '上传失败');
+        uploaded = false;
         runBtn.disabled = true;
+        return;
+      }
+      uploaded = true;
+      runBtn.disabled = false;
+      showNote(noteOk,
+        `${data.filename} — ${data.row_count} 行，${data.campaign_count} 个计划`);
+      if (data.warnings && data.warnings.length) {
+        showNote(noteWarn, data.warnings.join('\n'));
       }
     })
-    .catch(() => {
-      fileError.textContent = '上传出错，请重试';
-      fileError.style.display = 'block';
-    });
+    .catch(() => { showNote(noteErr, '上传出错，请重试'); });
 }
+
+publishCheck.addEventListener('change', () => {
+  $('publishHint').textContent = publishCheck.checked
+    ? '会真实开始投放并花钱。关掉则只搭到草稿，需要你自己去后台点「全部发布」。'
+    : '只搭建到草稿，不会花钱。搭完后需要你自己去后台检查并点「全部发布」。';
+});
 
 runBtn.addEventListener('click', () => {
   if (!uploaded) return;
   runBtn.disabled = true;
-  runBtn.textContent = '运行中...';
+  runBtn.textContent = '运行中…';
   progressCard.style.display = 'block';
-  resultList.innerHTML = '';
+  results.innerHTML = '';
   fatalBox.innerHTML = '';
 
   fetch('/run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ publish: publishCheck.checked }),
+    body: JSON.stringify({ publish: publishCheck.checked, mode: mode }),
   })
     .then(r => r.json())
     .then(data => {
       if (!data.ok) {
-        alert(data.error || '启动失败');
+        showNote(noteErr, data.error || '启动失败');
         runBtn.disabled = false;
         runBtn.textContent = '开始搭建';
         return;
       }
+      progressCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       startPolling();
     });
 });
@@ -238,41 +446,42 @@ function startPolling() {
   pollTimer = setInterval(poll, 1200);
   poll();
 }
+function poll() { fetch('/status').then(r => r.json()).then(render); }
 
-function statusLabel(s) {
-  return { idle: '未开始', running: '运行中', done: '已完成', error: '出错' }[s] || s;
-}
-
-function poll() {
-  fetch('/status').then(r => r.json()).then(render);
-}
+const LABEL = { idle: '未开始', running: '运行中', done: '已完成', error: '出错' };
 
 function render(s) {
-  progressCount.textContent = `${s.completed} / ${s.total}`;
-  progressStatus.textContent = statusLabel(s.status);
-  const pct = s.total ? (s.completed / s.total * 100) : 0;
-  barFill.style.width = pct + '%';
-  currentLine.textContent = s.current ? `正在搭建: ${s.current}` : '';
+  progCount.textContent = `${s.completed} / ${s.total}`;
+  progPill.textContent = LABEL[s.status] || s.status;
+  progPill.className = 'pill ' + s.status;
+  barFill.style.width = (s.total ? s.completed / s.total * 100 : 0) + '%';
 
-  if (s.fatal_error) {
-    fatalBox.innerHTML = `<div class="fatal">脚本运行出错，未能跑完：\n${escapeHtml(s.fatal_error)}</div>`;
+  if (s.current) {
+    current.style.display = 'flex';
+    current.innerHTML = `<span class="dot"></span>正在搭建：${esc(s.current)}`;
   } else {
-    fatalBox.innerHTML = '';
+    current.style.display = 'none';
   }
 
-  resultList.innerHTML = s.results.map(r => {
+  fatalBox.innerHTML = s.fatal_error
+    ? `<div class="fatal">脚本出错，没能跑完：\n${esc(s.fatal_error)}</div>` : '';
+
+  results.innerHTML = s.results.map(r => {
     const badge = r.success
       ? '<span class="badge ok">成功</span>'
       : '<span class="badge err">失败</span>';
-    let inner = `<div class="head"><div><strong>${escapeHtml(r.campaign_name)}</strong> (${r.ad_group_count} 个广告组)</div>${badge}</div>`;
-    if (r.error) {
-      inner += `<div class="err-text">${escapeHtml(r.error)}</div>`;
-    }
+    let html = `<div class="item-head">
+        <div class="item-name">${esc(r.campaign_name)}
+          <span class="item-meta">· ${r.ad_group_count} 个广告组</span></div>
+        ${badge}
+      </div>`;
+    if (r.error) html += `<div class="errtext">${esc(r.error)}</div>`;
     if (r.warnings && r.warnings.length) {
-      inner += '<ul class="warn-list">' + r.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('') + '</ul>';
+      html += '<ul class="warns">'
+        + r.warnings.map(w => `<li>${esc(w)}</li>`).join('') + '</ul>';
     }
-    return `<div class="result-item">${inner}</div>`;
-  }).join('') || '<div class="empty-hint">暂无结果</div>';
+    return `<div class="item">${html}</div>`;
+  }).join('') || '<div class="empty">还没有结果</div>';
 
   if (s.status === 'done' || s.status === 'error') {
     clearInterval(pollTimer);
@@ -281,10 +490,10 @@ function render(s) {
   }
 }
 
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = str == null ? '' : String(str);
-  return div.innerHTML;
+function esc(str) {
+  const d = document.createElement('div');
+  d.textContent = str == null ? '' : String(str);
+  return d.innerHTML;
 }
 </script>
 </body>
