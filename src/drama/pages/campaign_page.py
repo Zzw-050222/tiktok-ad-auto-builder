@@ -336,13 +336,26 @@ def publish_all(page, timeout_seconds=300, max_fix_rounds=5):
 
         if what == "fix":
             fix = _first_visible_button(page, "修复")
-            print(f"          [发布] 第{round_no + 1}轮弹出报错，点「修复」后重试",
-                  flush=True)
+            print(f"          [发布] 第{round_no + 1}轮弹出报错，点「修复」", flush=True)
             if fix is not None:
                 from src.pages.common import robust_click
 
                 robust_click(page, fix, timeout=15000)
-            page.wait_for_timeout(3000)
+
+            # 必须等这个窗口【真的消失】再去点发布。
+            # 不能点完修复就立刻点发布：弹层还在时它会盖住发布按钮，点了不生效，
+            # 白耗一轮重试次数。使用者的说法就是「点修复然后消失之后再点发布」。
+            gone = wait_until(
+                page,
+                lambda: True if _first_visible_button(page, "修复") is None else None,
+                timeout_seconds=60,
+            )
+            if gone:
+                print("          [发布] 修复窗口已消失，重新点发布", flush=True)
+            else:
+                print("          [发布] 修复窗口点了之后 60 秒还没消失，"
+                      f"当前可见按钮: {_visible_button_names(page)}", flush=True)
+            page.wait_for_timeout(1500)
             continue
 
         if what is None:
