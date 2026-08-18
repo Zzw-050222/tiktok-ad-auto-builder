@@ -261,6 +261,42 @@ def _click_publish(page):
     return None
 
 
+def _visible_button_names(page, limit=25):
+    """当前页面上所有可见按钮的文字。用于「发布卡住了」时看清实际有哪些按钮。"""
+    out = []
+    try:
+        btn = page.get_by_role("button")
+        for i in range(min(btn.count(), limit)):
+            try:
+                if not btn.nth(i).is_visible():
+                    continue
+                t = (btn.nth(i).inner_text() or "").replace("\n", " ").strip()
+                if t:
+                    out.append(t[:24])
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
+def _dialog_texts(page, limit=3):
+    """当前可见弹层/对话框里的文字，截断后返回。"""
+    out = []
+    try:
+        loc = page.locator('[role="dialog"]:visible, [class*="modal"]:visible')
+        for i in range(min(loc.count(), limit)):
+            try:
+                t = (loc.nth(i).inner_text() or "").replace("\n", " ").strip()
+                if t:
+                    out.append(t[:180])
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
 def publish_all(page, timeout_seconds=300, max_fix_rounds=5):
     """点「全部发布」并等到真的发布完（页面自己跳回计划列表）。
 
@@ -310,9 +346,13 @@ def publish_all(page, timeout_seconds=300, max_fix_rounds=5):
             continue
 
         if what is None:
-            # 既没跳走、也没报错框、也没看到进度提示——再点一次发布试试
-            print(f"          [发布] 第{round_no + 1}轮点完没有任何反应，重试",
-                  flush=True)
+            # 既没跳走、也没报错框、也没看到进度提示。
+            # 「修复」这个按钮名是按使用者的描述写的，还没在真实报错场景下验证过；
+            # 万一实际文字不是这两个字，就会走到这里白等。所以把【当前可见的按钮和
+            # 弹层文字】打出来——下次一出现就能立刻看出该认什么，不用再猜。
+            print(f"          [发布] 第{round_no + 1}轮点完没有明确结果。"
+                  f"当前可见按钮: {_visible_button_names(page)}", flush=True)
+            print(f"          [发布] 弹层文字: {_dialog_texts(page)}", flush=True)
             page.wait_for_timeout(2000)
             continue
 
