@@ -190,45 +190,58 @@ def build_drama_campaign(
             fill_ad_group_name(page, str(rec["Ad Group Name"]))
             select_product_catalog(page, catalog_id=None)
             add_specific_episode(page, series_id=series_id, series_name=series_name)
-            select_tiktok_mini(
-                page,
-                tt_mini_id=str(rec.get("TT Mini ID") or "").strip(),
-                mini_name=str(rec.get("Mini Game Name") or "").strip(),
-            )
-            # 选完 Mini 才会出现「选择价值类型」，默认是「应用内购价值」，
-            # 短剧要改成「广告收入价值」，改完再填 ROAS。
-            select_ad_revenue_value_type(page)
-            select_target_roas_drama(page, rec["roas_bid"])
-
-            region_pairs, missing = resolve_regions(str(rec["Region"]).strip())
-            for rid in missing:
-                warnings.append(f"[{tag}] 地区ID {rid} 在对照表里找不到")
-            if not region_pairs:
-                raise ValueError(
-                    f"[{tag}] 没有任何可用地区（TikTok 要求至少选一个地区才能继续）"
+            if i == 0:
+                # 只有【新建计划的第一个广告组】需要填这几项。
+                select_tiktok_mini(
+                    page,
+                    tt_mini_id=str(rec.get("TT Mini ID") or "").strip(),
+                    mini_name=str(rec.get("Mini Game Name") or "").strip(),
                 )
-            failed = set_regions_drama(page, region_pairs)
-            if failed:
-                # 地域没选中时把现场留下来。这一块在小游戏那边一直是好的，
-                # 短剧这边出问题多半跟【上一步是否滚动过页面】有关：
-                # ROAS 如果已经是目标值就会被跳过，页面就停在别的位置。
-                # 不留现场只会又靠猜。
-                try:
-                    from src.config import LOGS_DIR
+                # 选完 Mini 才会出现「选择价值类型」，默认是「应用内购价值」，
+                # 短剧要改成「广告收入价值」，改完再填 ROAS。
+                select_ad_revenue_value_type(page)
+                select_target_roas_drama(page, rec["roas_bid"])
 
-                    page.screenshot(path=str(LOGS_DIR / "drama_region_FAIL.png"))
-                    from src.drama.pages.adgroup_page import _visible_placeholders
-
-                    warnings.append(
-                        f"[{tag}] 地域失败现场：可见输入框 {_visible_placeholders(page)}；"
-                        f"截图 logs/drama_region_FAIL.png"
+                region_pairs, missing = resolve_regions(str(rec["Region"]).strip())
+                for rid in missing:
+                    warnings.append(f"[{tag}] 地区ID {rid} 在对照表里找不到")
+                if not region_pairs:
+                    raise ValueError(
+                        f"[{tag}] 没有任何可用地区（TikTok 要求至少选一个地区才能继续）"
                     )
-                except Exception:
-                    pass
-            for rid, name in failed or []:
-                warnings.append(f"[{tag}] 地区 {name}({rid}) 未能在页面上选中")
-            if failed and len(failed) == len(region_pairs):
-                raise ValueError(f"[{tag}] 所有地区都没能选中，无法继续")
+                failed = set_regions_drama(page, region_pairs)
+                if failed:
+                    # 地域没选中时把现场留下来。这一块在小游戏那边一直是好的，
+                    # 短剧这边出问题多半跟【上一步是否滚动过页面】有关：
+                    # ROAS 如果已经是目标值就会被跳过，页面就停在别的位置。
+                    # 不留现场只会又靠猜。
+                    try:
+                        from src.config import LOGS_DIR
+
+                        page.screenshot(path=str(LOGS_DIR / "drama_region_FAIL.png"))
+                        from src.drama.pages.adgroup_page import _visible_placeholders
+
+                        warnings.append(
+                            f"[{tag}] 地域失败现场：可见输入框 {_visible_placeholders(page)}；"
+                            f"截图 logs/drama_region_FAIL.png"
+                        )
+                    except Exception:
+                        pass
+                for rid, name in failed or []:
+                    warnings.append(f"[{tag}] 地区 {name}({rid}) 未能在页面上选中")
+                if failed and len(failed) == len(region_pairs):
+                    raise ValueError(f"[{tag}] 所有地区都没能选中，无法继续")
+            else:
+                # 从推广系列列表点进原计划、点「创建」建出来的广告组，
+                # TikTok Mini / 价值类型 / 目标 ROAS / 地域【全部是继承下来的】，
+                # 已经填好了。使用者明确说过：选完特定剧集，这一层的活就干完了，
+                # 直接点右下角「继续」去广告层，广告层的东西才要重新填。
+                #
+                # 之前是对每个广告组都跑这四步，靠各自的「已设好就跳过」兜着。
+                # 结果虽然对，但每次都白跑一遍检查——尤其选 Mini 那步要滚动、要
+                # 展开下拉，使用者看到的就是页面在那儿来回滚、半天才过去。
+                print("      从列表新建的广告组：Mini / 价值类型 / ROAS / 地域 "
+                      "都是继承的，直接继续", flush=True)
 
             continue_step(page)
             wait_ad_page_ready(page)
