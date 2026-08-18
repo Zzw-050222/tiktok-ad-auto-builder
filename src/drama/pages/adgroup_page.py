@@ -92,6 +92,33 @@ def _scroll_into_comfortable_view(page, locator, tries=14, label=""):
         except Exception:
             return None
 
+    # 先用 scrollIntoView 一步跳到位，不要一上来就用滚轮试探。
+    # 使用者反馈：选 TikTok Mini 时页面【一直上下滚动，花不少时间才锁定】——
+    # 原因就是只有滚轮循环：每次滚 (y - target)，但页面有吸顶/吸底、滚动被内层
+    # 容器分走，实际位移和预期对不上，于是来回修正好几轮。
+    # scrollIntoView 由浏览器一次算准，通常一次就落在中间；落不准再用滚轮微调。
+    try:
+        locator.evaluate("""el => {
+          let n = el;
+          for (let k = 0; k < 6 && n; k++) {
+            const r = n.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) {
+              n.scrollIntoView({block: 'center', inline: 'nearest'});
+              return;
+            }
+            n = n.parentElement;   // slot 之类自身没有盒子，往上找有盒子的
+          }
+        }""")
+        page.wait_for_timeout(400)
+    except Exception:
+        pass
+
+    r0 = rect()
+    if r0:
+        y0 = r0["y"] + r0["h"] / 2
+        if top_safe <= y0 <= bottom_safe:
+            return True
+
     try:
         page.mouse.move(800, 500)              # wheel 滚的是鼠标底下的容器
     except Exception:
@@ -280,8 +307,54 @@ def select_product_catalog(page, catalog_id=None, timeout_seconds=60):
             "如果这一节整个不存在，检查计划层的「设置商品库推广系列」开关有没有打开。"
         )
     trigger.scroll_into_view_if_needed(timeout=5000)
-    click_to_open(trigger, timeout=10000)
+    page.wait_for_timeout(500)
 
+    # ---- 展开下拉：必须用【真实鼠标点坐标】，不能点占位文字元素 ----
+    #
+    # 这一步坑了很久，根因探针实测：
+    #   祖先0 <span class="...__display--placeholder">  pointer-events: none  ← 占位文字
+    #   祖先1 <div  class="value-field__texted__input">  pointer-events: auto  ← 这层才收点击
+    # 占位文字自己【不接收点击】，点它等于没点，下拉一动不动。使用者一直说
+    # 「是点不上那个框」「点请选择商品库右边一点的白色部分」，说的就是这件事。
+    #
+    # 换成 page.mouse.click(坐标) 之后，下拉立刻展开，里面就是
+    # 「短剧 商品库 / ID: 7665919003159774992」。
+    #
+    # 更要记住的教训：在此之前我以为是「匹配规则太窄」，接连改了三版选项匹配
+    # （去掉 ID、改 role=option、读弹层文字），全都是在解决一个不存在的问题——
+    # 下拉压根没开，匹配什么都匹配不到。中途还把页头的广告主账号名
+    # （class=advertiser_name，坐标 (1387,27)）误认成商品库。
+    # 报错说「没有任何可见的商品库」时，先确认下拉是不是真的开了。
+    def dropdown_open():
+        return page.locator(r"text=/ID[:：]\s*\d{10,}/").count() > 0
+
+    opened = False
+    for attempt in range(3):
+        box = trigger.bounding_box()
+        if not box:
+            break
+        # 点框的中部偏右：占位文字那一层不收点击，右边的空白区域属于外层容器。
+        cx = box["x"] + box["width"] * 0.75
+        cy = box["y"] + box["height"] / 2
+        page.mouse.click(cx, cy)
+        page.wait_for_timeout(2500)
+        if wait_until(page, lambda: dropdown_open() or None, timeout_seconds=20):
+            opened = True
+            break
+        print(f"          [商品库] 第{attempt + 1}次点击没能展开下拉，重试", flush=True)
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(800)
+
+    if not opened:
+        raise ValueError(
+            "点了「关联的商品库」那个框，但下拉一直没有展开。\n"
+            "注意占位文字本身是 pointer-events:none，必须点框（这里已经用真实鼠标"
+            "点坐标了）。如果仍然打不开，多半是这个广告主下没有可用商品库，"
+            "或者页面报了「网络错误。请稍后重试。」——刷新后重跑。"
+        )
+
+    # ---- 选项匹配：按 ID 行找（这本来就是对的，之前被我误改过，已还原）----
+    # DOM 里同一个 ID 会有隐藏副本，所以只在【可见】的里面挑。
     all_ids = page.locator(r"text=/ID[:：]\s*\d{10,}/")
 
     def visible_ids():
@@ -296,45 +369,26 @@ def select_product_catalog(page, catalog_id=None, timeout_seconds=60):
 
     found = wait_until(page, visible_ids, timeout_seconds=45)
     if not found:
-        # 不能只说「没有可见的商品库」——那句话看不出是「下拉没展开」、
-        # 「展开了但还在转圈」还是「TikTok 改了选项渲染方式、不再带 ID 了」。
-        # 把下拉里实际有什么打出来。
-        try:
-            box = page.locator('[class*="dropdown"]:visible, [class*="popover"]:visible')
-            texts = []
-            for i in range(min(box.count(), 4)):
-                try:
-                    t = (box.nth(i).inner_text() or "").replace("\n", " ").strip()
-                    if t:
-                        texts.append(t[:200])
-                except Exception:
-                    continue
-            raise ValueError(
-                "下拉展开后，没有任何可见的商品库（等了 45 秒）。"
-                f"当前下拉/弹层里的文字: {texts or '（空——下拉可能压根没展开）'}"
-            )
-        except ValueError:
-            raise
-        except Exception:
-            raise ValueError("下拉展开后，没有任何可见的商品库（等了 45 秒）")
+        raise ValueError("下拉已展开，但里面没有任何带 ID 的商品库（等了 45 秒）")
 
     if catalog_id:
         want = str(catalog_id).strip()
-        pattern = _CATALOG_ID_RE.format(re.escape(want))
-        opt = _first_visible(page.locator(f"text=/{pattern}/"))
-        if not opt:
+        hit = [(i, t) for i, t in found if want in t]
+        if not hit:
             raise ValueError(
-                f"下拉里没有可见的商品库 ID {want!r}。当前可见的是: "
-                f"{[t for _, t in found]}"
+                f"下拉里没有商品库 ID {want!r}。当前可见的是: {[t for _, t in found]}"
             )
+        opt = all_ids.nth(hit[0][0])
     else:
+        # 没指定就要求唯一。使用者确认：所有投短剧的账号共用同一个商品库，
+        # 所以正常情况下这里就是一个。多于一个时不猜，挑错商品库会投错钱。
         if len(found) > 1:
             raise ValueError(
                 f"没有指定商品库 ID，但下拉里有 {len(found)} 个可见商品库: "
-                f"{[t for _, t in found]}。"
-                "这时候挑哪个都可能投错，请在表里指定要用的商品库 ID。"
+                f"{[t for _, t in found]}。请在表里指定要用的商品库 ID。"
             )
         opt = all_ids.nth(found[0][0])
+        print(f"          [商品库] 选唯一可见的: {found[0][1][:50]!r}", flush=True)
 
     opt.scroll_into_view_if_needed(timeout=5000)
     opt.click(timeout=10000)

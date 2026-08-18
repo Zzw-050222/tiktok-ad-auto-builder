@@ -462,11 +462,21 @@ def select_creative_materials(page, search_term: str, count: int, used_ids=None,
                 "找不到素材库列表自己的滚动容器，无法加载下一批素材。"
                 f"原因/祖先链: {diag.get('reason') or diag.get('chain')}"
             )
-        if diag["after"] <= diag["before"] and diag["after"] + 4 < diag["scrollHeight"]:
-            # 容器找到了但没滚动成功，也不要当成「素材不够」
+        # scrollTop 的最大值是 scrollHeight - clientHeight，【不是 scrollHeight】。
+        # 已经滚到底时 scrollTop 本来就不会再变，原来的判据
+        # （after + 4 < scrollHeight 就算「没滚动成功」）会把「到底了」误判成
+        # 「容器坏了」并直接抛错——实测 scrollTop 203->203、scrollHeight 886、
+        # clientHeight 683，203+683=886 明明已经到底，却报「滚动容器没能滚动」，
+        # 于是素材还够用的情况下整条流程被中断。
+        at_bottom = (
+            diag["after"] + diag.get("clientHeight", 0) + 4 >= diag["scrollHeight"]
+        )
+        if diag["after"] <= diag["before"] and not at_bottom:
+            # 容器找到了但确实没滚动成功，也不要当成「素材不够」
             raise ValueError(
                 f"素材库列表的滚动容器没能滚动（scrollTop {diag['before']}->{diag['after']}, "
-                f"scrollHeight {diag['scrollHeight']}, 容器 {diag['tag']}.{diag['cls']}）"
+                f"scrollHeight {diag['scrollHeight']}, clientHeight "
+                f"{diag.get('clientHeight')}, 容器 {diag['tag']}.{diag['cls']}）"
             )
 
         def more_loaded():
