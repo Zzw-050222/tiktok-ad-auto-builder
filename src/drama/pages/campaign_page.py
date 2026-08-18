@@ -228,21 +228,106 @@ def _newest_campaign_link(page, campaign_name):
     return best
 
 
-def publish_all(page, timeout_seconds=300):
+_PUBLISH_BUTTON_NAMES = ("全部发布", "发布")
+
+
+def _first_visible_button(page, name, limit=5):
+    btn = page.get_by_role("button", name=name, exact=True)
+    try:
+        n = btn.count()
+    except Exception:
+        return None
+    for i in range(min(n, limit)):
+        try:
+            if btn.nth(i).is_visible():
+                return btn.nth(i)
+        except Exception:
+            continue
+    return None
+
+
+def _click_publish(page):
+    """点发布按钮。返回点中的按钮名，一个都没有就返回 None。
+
+    两个名字都试：主流程上是「全部发布」，报错弹层修复之后有时只剩「发布」。
+    """
+    for name in _PUBLISH_BUTTON_NAMES:
+        btn = _first_visible_button(page, name)
+        if btn is not None:
+            from src.pages.common import robust_click
+
+            robust_click(page, btn, timeout=15000)
+            return name
+    return None
+
+
+def publish_all(page, timeout_seconds=300, max_fix_rounds=5):
     """点「全部发布」并等到真的发布完（页面自己跳回计划列表）。
 
-    绝不要自己强行跳转：中途跳走会打断发布，计划实际不会上线。慢没关系，早跳不行。
+    平台有个已知的概率性 bug（使用者实测）：一个广告组下的广告数量大于 1 时，
+    点发布有概率弹出报错框。处理办法是点那个框右下角的「修复」，然后再点发布；
+    还报错就再重复一次。所以这里是「点发布 -> 看到修复按钮就点它 -> 再点发布」
+    的循环，最多 max_fix_rounds 轮。
+
+    绝不要自己强行跳转去计划列表：中途跳走会打断发布，计划实际不会上线。
+    慢没关系，早跳不行。
     """
     from src.pages.common import wait_until
 
-    page.get_by_role("button", name="全部发布", exact=True).click(timeout=15000)
-    try:
-        page.get_by_text("广告创建中", exact=False).wait_for(state="visible", timeout=15000)
-    except Exception:
-        pass
-    page.wait_for_url(lambda url: "manage/campaign" in url, timeout=timeout_seconds * 1000)
-    wait_until(page, lambda: "manage/campaign" in page.url, timeout_seconds=30)
-    page.wait_for_timeout(1500)
+    for round_no in range(max_fix_rounds + 1):
+        clicked = _click_publish(page)
+        if clicked is None:
+            raise ValueError(
+                "找不到「全部发布」或「发布」按钮，无法发布。"
+                f"当前地址: {page.url[:120]}"
+            )
+
+        def outcome():
+            # 顺序要紧：已经跳回列表就算成功，其次才看有没有报错要修
+            if "manage/campaign" in page.url:
+                return "done"
+            if _first_visible_button(page, "修复") is not None:
+                return "fix"
+            try:
+                loc = page.get_by_text("广告创建中", exact=False)
+                if loc.count() > 0 and loc.first.is_visible():
+                    return "publishing"
+            except Exception:
+                pass
+            return None
+
+        what = wait_until(page, outcome, timeout_seconds=90)
+
+        if what == "fix":
+            fix = _first_visible_button(page, "修复")
+            print(f"          [发布] 第{round_no + 1}轮弹出报错，点「修复」后重试",
+                  flush=True)
+            if fix is not None:
+                from src.pages.common import robust_click
+
+                robust_click(page, fix, timeout=15000)
+            page.wait_for_timeout(3000)
+            continue
+
+        if what is None:
+            # 既没跳走、也没报错框、也没看到进度提示——再点一次发布试试
+            print(f"          [发布] 第{round_no + 1}轮点完没有任何反应，重试",
+                  flush=True)
+            page.wait_for_timeout(2000)
+            continue
+
+        # publishing 或 done：等页面【自己】跳回计划列表
+        page.wait_for_url(
+            lambda url: "manage/campaign" in url, timeout=timeout_seconds * 1000
+        )
+        wait_until(page, lambda: "manage/campaign" in page.url, timeout_seconds=30)
+        page.wait_for_timeout(1500)
+        return
+
+    raise ValueError(
+        f"点了 {max_fix_rounds + 1} 轮发布（每次报错都点过「修复」），"
+        "页面始终没有跳回计划列表。请手动到后台看这个计划的状态，别重复跑。"
+    )
 
 
 def open_campaign_and_create_adgroup(
