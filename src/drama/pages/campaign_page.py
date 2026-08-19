@@ -45,7 +45,13 @@ def ensure_chinese_ui(page, advertiser_id, attempts=4):
     做法：进 dashboard 看语言；是英文就重新加载再看（实测它是在两种状态间来回切，
     重载往往就回到中文）；试满 attempts 次仍是英文就明确报错，让人去手动切语言，
     而不是硬闯下去产生一堆莫名其妙的超时。
+
+    2026-08-19 改：语言读不出来时【不再猜】。原来那句错误把「页面没加载出来」和
+    「没权限」并列着说，而给别人用之后最常见的其实是第三种——根本没登录。
+    三种情况使用者要做的事完全不同，所以交给 src/account.py 去分辨，
+    这里只负责语言。
     """
+    from src.account import check_advertiser_access, describe_access
     from src.pages.common import wait_until
 
     url = f"{DASHBOARD_URL}?aadvid={advertiser_id}"
@@ -58,12 +64,15 @@ def ensure_chinese_ui(page, advertiser_id, attempts=4):
         if lang == "zh":
             return True
         if lang is None:
-            raise TimeoutError(
-                "进入 Ads Manager 后 45 秒内既没看到「创建广告」也没看到「Create ad」，"
-                "页面可能没加载出来，或者当前登录账号没有这个广告主的权限"
-                "（无权限时 TikTok 会跳到 /i18n/forbidden）。"
-                f"当前地址: {page.url[:100]}"
-            )
+            access = check_advertiser_access(page, advertiser_id, timeout_seconds=20)
+            if access.get("state") == "ok":
+                # 刚才只是没加载完，现在出来了 —— 顺着新读到的语言继续往下走
+                lang = access.get("lang")
+                seen[-1] = lang
+                if lang == "zh":
+                    return True
+            else:
+                raise PermissionError(describe_access(access, advertiser_id, "短剧"))
 
         # 是英文 —— 去 /i18n/home 把语言切回中文再回来。
         # 这一步不能省：实测这个账号的语言【会自己弹回英文】，切过一次不代表下次还是

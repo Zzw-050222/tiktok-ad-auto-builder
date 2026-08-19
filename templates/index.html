@@ -107,6 +107,41 @@
     box-shadow: inset 0 0 0 3px var(--panel-2);
   }
 
+  /* ---------- 账号 ---------- */
+  .acct {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 14px; flex-wrap: wrap;
+  }
+  .acct-state { font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
+  .acct-state .led {
+    width: 8px; height: 8px; border-radius: 50%; flex: none;
+    background: var(--faint);
+  }
+  .acct-state.on  .led { background: var(--ok); }
+  .acct-state.off .led { background: var(--warn); }
+  .acct-btns { display: flex; gap: 8px; }
+  .btn {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 8px 14px;
+    font-size: 13px; font-weight: 500;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover:not(:disabled) { filter: brightness(1.12); color: #fff; }
+  .acct-msg {
+    display: none;
+    margin-top: 13px; padding: 10px 12px;
+    border-radius: 9px; font-size: 12.5px;
+    background: var(--panel-2); color: var(--muted);
+    white-space: pre-wrap;
+  }
+
   /* ---------- 上传 ---------- */
   .dropzone {
     border: 1.5px dashed var(--border);
@@ -139,6 +174,8 @@
     border-radius: 9px;
     font-size: 13px;
     border: 1px solid transparent;
+    white-space: pre-wrap;   /* 广告主 ID 列表和多条警告要换行显示 */
+    word-break: break-word;
   }
   .note.ok  { background: var(--ok-bg);  border-color: rgba(52,211,153,.25);  color: var(--ok); }
   .note.err { background: var(--err-bg); border-color: rgba(248,113,113,.25); color: var(--err); }
@@ -276,7 +313,24 @@
   </div>
 
   <div class="card">
-    <div class="card-title"><span class="step-num">2</span>上传表格</div>
+    <div class="card-title"><span class="step-num">2</span>登录账号</div>
+    <div class="acct">
+      <div class="acct-state" id="acctState"><span class="led"></span>检查中…</div>
+      <div class="acct-btns">
+        <button class="btn primary" id="loginBtn">登录 / 换账号</button>
+        <button class="btn" id="logoutBtn">退出登录</button>
+      </div>
+    </div>
+    <div class="acct-msg" id="acctMsg"></div>
+    <div class="cols">
+      用<b>你自己的 BC 账号</b>登录，之后就能搭建这个账号下有权限的广告主。<br>
+      两种搭建类型各记一份登录态，互不影响 —— 它们通常属于不同的 Business Center。<br>
+      换人用 / 换 BC：先点【退出登录】再登，直接在浏览器里切账号常常会被残留 cookie 登回旧账号。
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><span class="step-num">3</span>上传表格</div>
     <div class="dropzone" id="dropzone">
       <div class="dz-main">点击选择 .xlsx 文件，或拖到这里</div>
       <div class="dz-hint">每次上传会覆盖上一份</div>
@@ -289,7 +343,7 @@
   </div>
 
   <div class="card">
-    <div class="card-title"><span class="step-num">3</span>运行</div>
+    <div class="card-title"><span class="step-num">4</span>运行</div>
     <div class="switch-row">
       <label class="switch">
         <input type="checkbox" id="publishCheck" checked>
@@ -346,6 +400,7 @@ const MODE_INFO = {
 let mode = 'minigame';
 let uploaded = false;
 let pollTimer = null;
+let acctTimer = null;
 
 function renderModeInfo() {
   colsHint.innerHTML = MODE_INFO[mode].cols;
@@ -362,8 +417,79 @@ document.querySelectorAll('.mode').forEach(el => {
     uploaded = false;
     runBtn.disabled = true;
     hideNotes();
+    // 登录态是按模式分开存的，切模式要重新看
+    refreshAccount();
   });
 });
+
+/* ---------------- 账号 ---------------- */
+const acctState = $('acctState'), acctMsg = $('acctMsg');
+const loginBtn = $('loginBtn'), logoutBtn = $('logoutBtn');
+
+function showAcctMsg(text) {
+  acctMsg.textContent = text || '';
+  acctMsg.style.display = text ? 'block' : 'none';
+}
+
+function refreshAccount() {
+  return fetch('/account?mode=' + encodeURIComponent(mode))
+    .then(r => r.json())
+    .then(data => {
+      if (!data.ok) return;
+      const waiting = data.login.status === 'waiting' && data.login.mode === mode;
+      acctState.className = 'acct-state ' + (data.has_login ? 'on' : 'off');
+      acctState.innerHTML = '<span class="led"></span>' + esc(
+        // 说「本机有登录记录」而不是「已登录」：这只是看 profile 里有没有 cookie
+        // 文件，登录过但已经过期的也算。真登没登录只有开浏览器才知道
+        // （TikTok 没有与广告主无关的登录状态页，见 src/account.py）。
+        waiting ? `${data.label}：等你在浏览器窗口里登录…`
+        : data.has_login ? `${data.label}：本机有登录记录（过期了就重新登一次）`
+        : `${data.label}：还没登录过`);
+
+      loginBtn.disabled = waiting || !!data.busy;
+      logoutBtn.disabled = waiting || !!data.busy || !data.has_login;
+
+      // 只显示当前模式的登录消息，免得切过去看到另一个模式的旧提示
+      showAcctMsg(data.login.mode === mode ? data.login.message : (data.busy || ''));
+
+      // 登录窗口还开着就继续盯，关掉/成功了就停
+      if (waiting && !acctTimer) acctTimer = setInterval(refreshAccount, 2000);
+      if (!waiting && acctTimer) { clearInterval(acctTimer); acctTimer = null; }
+    })
+    .catch(() => {});
+}
+
+loginBtn.addEventListener('click', () => {
+  loginBtn.disabled = true;
+  showAcctMsg('正在打开登录窗口…');
+  fetch('/account/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: mode }),
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (!data.ok) showAcctMsg(data.error || '打不开登录窗口');
+      refreshAccount();
+    });
+});
+
+logoutBtn.addEventListener('click', () => {
+  if (!confirm('退出登录？下次搭建前需要重新登录。\n（上一次的登录态会留一份备份）')) return;
+  logoutBtn.disabled = true;
+  fetch('/account/logout', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: mode }),
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (!data.ok) showAcctMsg(data.error || '退出失败');
+      refreshAccount();
+    });
+});
+
+refreshAccount();
 
 function hideNotes() {
   [noteOk, noteErr, noteWarn].forEach(n => n.style.display = 'none');
@@ -401,8 +527,12 @@ function doUpload(file) {
       }
       uploaded = true;
       runBtn.disabled = false;
+      // 把读到的广告主 ID 回显出来：使用者能一眼确认程序读的是不是他自己那个账号，
+      // 而不是跑起来撞上「无权限操作」才发现读错了列。
+      const ids = (data.advertiser_ids || []).join('、');
       showNote(noteOk,
-        `${data.filename} — ${data.row_count} 行，${data.campaign_count} 个计划`);
+        `${data.filename} — ${data.row_count} 行，${data.campaign_count} 个计划`
+        + (ids ? `\n广告主 ID：${ids}` : ''));
       if (data.warnings && data.warnings.length) {
         showNote(noteWarn, data.warnings.join('\n'));
       }

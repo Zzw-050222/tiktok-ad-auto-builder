@@ -19,6 +19,7 @@ import sys
 
 from playwright.sync_api import sync_playwright
 
+from src.account import check_advertiser_access, describe_access
 from src.config import ACCEPT_LANGUAGE, LOCALE, LOGS_DIR
 from src.drama.builder import build_drama_campaign
 from src.drama.config import DRAMA_BROWSER_PROFILE_DIR
@@ -68,8 +69,27 @@ def main():
         )
         page = context.pages[0] if context.pages else context.new_page()
 
+        # 先确认登录 + 每个广告主的权限。表格里可能有多个广告主 ID，必须【全部】
+        # 先验一遍：这条流程是边建边真发布的，跑到第 2 个广告主才发现没权限，
+        # 前面花掉的钱收不回来。
+        ids = []
+        for (aid, _cn), _rows in groups:
+            aid = str(aid).strip()
+            if aid and aid not in ids:
+                ids.append(aid)
+        L(f"表格里共 {len(ids)} 个广告主 ID: {', '.join(ids)}")
+        for aid in ids:
+            access = check_advertiser_access(page, aid)
+            if access.get("state") != "ok":
+                L("")
+                L(describe_access(access, aid, "短剧"))
+                context.close()
+                sys.exit(1)
+            L(f"  广告主 {aid} ✓ 可以打开（界面语言 {access.get('lang')}）")
+        L("")
+
         # 整套定位都依赖中文文案，界面变英文时每一步都会失败，所以在最开头拦住。
-        # 这个账号实测会在中英文之间自己来回切，每次跑都要确认。
+        # 实测界面会在中英文之间自己来回切，每次跑都要确认。
         ensure_chinese_ui(page, str(records[0]["Advertiser ID"]).strip())
 
         creative_usage = {}

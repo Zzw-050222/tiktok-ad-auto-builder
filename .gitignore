@@ -1,6 +1,7 @@
 venv/
-browser_profile/
-browser_profile_drama/
+# 浏览器登录态。通配符要覆盖备份目录：换账号时会留一份 *__previous，
+# 手动排查时也常见 *.old —— 这些一样是登录凭证，绝对不能进仓库。
+browser_profile*
 .env
 __pycache__/
 *.pyc

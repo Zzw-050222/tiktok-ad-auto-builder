@@ -14,6 +14,14 @@ import traceback
 from flask import Flask, jsonify, render_template, request
 from playwright.sync_api import sync_playwright
 
+from src.account import (
+    check_advertiser_access,
+    clear_profile,
+    describe_access,
+    is_browser_closed_error,
+    profile_has_login,
+    wait_for_login,
+)
 from src.builder import build_campaign_group
 from src.config import (
     ACCEPT_LANGUAGE,
@@ -57,6 +65,14 @@ run_state = {
     "fatal_error": None,
 }
 
+# 登录窗口是另一条长时间运行的线程，状态单独放。
+# 必须和搭建互斥：Chromium 会锁住 user_data_dir，两边同时开同一个 profile 会打架。
+login_state = {
+    "status": "idle",  # idle | waiting | done | error
+    "mode": None,
+    "message": "",
+}
+
 
 def _reset_state():
     run_state.update(
@@ -68,6 +84,16 @@ def _reset_state():
         results=[],
         fatal_error=None,
     )
+
+
+def _busy_reason():
+    """现在有没有别的事情正占着浏览器 profile。没有就返回 None。"""
+    with state_lock:
+        if run_state["status"] == "running":
+            return "正在搭建，等它跑完再操作账号"
+        if login_state["status"] == "waiting":
+            return "登录窗口还开着，先在那个窗口里登录完（或者关掉它）"
+    return None
 
 
 def _preflight_drama(groups):
@@ -123,6 +149,56 @@ def _log_result(mode, publish, campaign_name, result):
         pass
 
 
+def _advertiser_ids(groups):
+    """表格里出现过的所有广告主 ID，去重、保持出现顺序。
+
+    原来只拿第一行那个去检查（ensure_chinese_ui(records[0]["Advertiser ID"])），
+    因为作者自己的表里从头到尾就一个广告主。别人的表里完全可能一次跑好几个广告主，
+    那样第 2 个广告主没权限就要跑到一半才炸，前面已经真发布出去的钱收不回来。
+    """
+    seen, out = set(), []
+    for (advertiser_id, _campaign_name), _rows in groups:
+        aid = str(advertiser_id).strip()
+        if aid and aid not in seen:
+            seen.add(aid)
+            out.append(aid)
+    return out
+
+
+def _preflight_access(page, groups, mode):
+    """开跑之前，把表格里每一个广告主 ID 都打开确认一遍。
+
+    这一步是给别人用之后加的。以前的失败长这样：跑起来 -> 卡在语言检测 45 秒 ->
+    报一句「页面可能没加载出来，或者当前登录账号没有这个广告主的权限」，
+    使用者只看到「无权限操作」四个字，不知道是该登录、该换账号还是该改表格。
+    现在在动手之前就把每个 ID 分别验一遍，报错直接说清是哪个 ID、哪种原因。
+    """
+    label = MODES[mode]["label"]
+    ids = _advertiser_ids(groups)
+    print(f"[预检] 表格里共 {len(ids)} 个广告主 ID: {', '.join(ids)}", flush=True)
+    for aid in ids:
+        access = check_advertiser_access(page, aid)
+        if access.get("state") != "ok":
+            raise PermissionError(describe_access(access, aid, label))
+        print(f"[预检] 广告主 {aid} ✓ 可以打开（界面语言 {access.get('lang')}）",
+              flush=True)
+
+
+def _friendly_fatal(exc):
+    """把致命异常翻成使用者看得懂的话；看不懂的才附完整堆栈。
+
+    浏览器被关掉和没权限是最常见的两种，它们都不是「程序坏了」，
+    甩一整个 Playwright 堆栈只会让人以为要改代码。
+    """
+    if is_browser_closed_error(exc):
+        return ("浏览器窗口被关掉了，这次没跑完。\n"
+                "跑的过程中请不要关那个自动打开的窗口——它就是干活的地方。\n"
+                "已经发布出去的计划不会回滚，重跑之前请先去后台确认一下建到哪了。")
+    if isinstance(exc, PermissionError):
+        return str(exc)
+    return traceback.format_exc()
+
+
 def _run_build(xlsx_path, publish, mode):
     try:
         records = load_rows(xlsx_path)
@@ -152,9 +228,12 @@ def _run_build(xlsx_path, publish, mode):
             page = context.pages[0] if context.pages else context.new_page()
             creative_usage = {}
 
+            # 先确认登录 + 每个广告主 ID 的权限，再谈别的
+            _preflight_access(page, groups, mode)
+
             if mode == "drama" and records:
                 # 整套定位都依赖中文文案，界面变英文时每一步都会失败，所以先拦住。
-                # 这个账号实测会在中英文之间自己来回切，每次跑都要确认。
+                # 实测界面会在中英文之间自己来回切，每次跑都要确认。
                 from src.drama.pages.campaign_page import ensure_chinese_ui
 
                 ensure_chinese_ui(page, str(records[0]["Advertiser ID"]).strip())
@@ -199,19 +278,144 @@ def _run_build(xlsx_path, publish, mode):
             run_state["status"] = "done"
             run_state["current"] = None
 
-    except Exception:
-        tb = traceback.format_exc()
+    except Exception as e:
+        message = _friendly_fatal(e)
         with state_lock:
             run_state["status"] = "error"
-            run_state["fatal_error"] = tb
+            run_state["fatal_error"] = message
         try:
             from src.config import LOGS_DIR
 
             LOGS_DIR.mkdir(parents=True, exist_ok=True)
             with open(str(LOGS_DIR / "web_build.txt"), "a", encoding="utf-8") as f:
-                f.write(f"\n=== 整体崩了（mode={mode}）===\n{tb}\n")
+                f.write(f"\n=== 整体停了（mode={mode}）===\n{message}\n")
+                # 日志里永远留一份完整堆栈，界面上只给人话
+                f.write(f"\n--- 完整堆栈 ---\n{traceback.format_exc()}\n")
         except Exception:
             pass
+
+
+def _login_worker(mode):
+    """开一个浏览器窗口让使用者登录自己的 BC 账号，登录态存进这个模式的 profile。
+
+    和搭建用的是同一个 profile 目录，所以必须互斥（见 _busy_reason）。
+    """
+    profile = MODES[mode]["profile"]
+    label = MODES[mode]["label"]
+    try:
+        with sync_playwright() as p:
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=str(profile),
+                headless=False,
+                locale=LOCALE,
+                extra_http_headers={"Accept-Language": ACCEPT_LANGUAGE},
+                viewport={"width": 1600, "height": 1000},
+            )
+            page = context.pages[0] if context.pages else context.new_page()
+
+            def progress(waited, url):
+                with state_lock:
+                    login_state["message"] = (
+                        f"已等待 {waited} 秒，请在打开的窗口里登录（当前 {url[:60]}）"
+                    )
+
+            found = wait_for_login(page, timeout_seconds=600, on_progress=progress)
+            context.close()
+
+        with state_lock:
+            if found:
+                login_state["status"] = "done"
+                login_state["message"] = (
+                    f"登录成功（检测到「{found}」）。{label}的登录态已保存，可以开始搭建了。"
+                )
+            else:
+                login_state["status"] = "error"
+                login_state["message"] = (
+                    "等了 10 分钟还没检测到登录成功。如果你其实已经登进去了，"
+                    "可以直接关掉这个窗口再点一次【检查登录状态】。"
+                )
+    except Exception as e:
+        with state_lock:
+            login_state["status"] = "error"
+            if is_browser_closed_error(e):
+                login_state["message"] = (
+                    "登录窗口被关掉了。如果登录已经完成，登录态是保存下来的，"
+                    "直接开始搭建就行；没登完的话再点一次【登录 / 换账号】。"
+                )
+            else:
+                login_state["message"] = f"登录窗口出错: {e}"
+
+
+@app.route("/account")
+def account():
+    """当前模式的登录状态（弱判断：只看 profile 里有没有登录过的痕迹）。"""
+    mode = request.args.get("mode", "minigame")
+    if mode not in MODES:
+        return jsonify({"ok": False, "error": f"未知模式: {mode}"}), 400
+    with state_lock:
+        login = dict(login_state)
+    return jsonify(
+        {
+            "ok": True,
+            "mode": mode,
+            "label": MODES[mode]["label"],
+            "has_login": profile_has_login(MODES[mode]["profile"]),
+            "login": login,
+            "busy": _busy_reason(),
+        }
+    )
+
+
+@app.route("/account/login", methods=["POST"])
+def account_login():
+    payload = request.json if request.is_json else {}
+    mode = payload.get("mode", "minigame")
+    if mode not in MODES:
+        return jsonify({"ok": False, "error": f"未知模式: {mode}"}), 400
+
+    busy = _busy_reason()
+    if busy:
+        return jsonify({"ok": False, "error": busy}), 400
+
+    with state_lock:
+        login_state.update(
+            status="waiting",
+            mode=mode,
+            message="正在打开登录窗口……请在弹出的浏览器里登录你自己的 BC 账号。",
+        )
+    threading.Thread(target=_login_worker, args=(mode,), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/account/logout", methods=["POST"])
+def account_logout():
+    """清掉当前模式的登录态 —— 换成另一个人/另一个 BC 账号时用。
+
+    做法是把 profile 目录整个挪走（留一份上一次的），下次打开就是全新未登录状态。
+    换账号必须走这一步：直接在浏览器里切账号，残留 cookie 经常会把人自动登回旧账号，
+    看着像换了、跑起来还是旧的。
+    """
+    payload = request.json if request.is_json else {}
+    mode = payload.get("mode", "minigame")
+    if mode not in MODES:
+        return jsonify({"ok": False, "error": f"未知模式: {mode}"}), 400
+
+    busy = _busy_reason()
+    if busy:
+        return jsonify({"ok": False, "error": busy}), 400
+
+    try:
+        backup = clear_profile(MODES[mode]["profile"])
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"清理登录态失败: {e}"}), 500
+
+    with state_lock:
+        login_state.update(
+            status="idle",
+            mode=mode,
+            message=f"已退出登录（上一次的登录态备份在 {backup}）。点【登录 / 换账号】登新账号。",
+        )
+    return jsonify({"ok": True, "backup": backup})
 
 
 @app.route("/")
@@ -241,12 +445,22 @@ def upload():
 
     warnings = _preflight_drama(groups) if mode == "drama" else []
 
+    # 把表格里的广告主 ID 回显出来。给别人用之后这一项很重要：使用者能一眼看出
+    # 程序读到的是不是他自己那个 ID，而不是跑起来才发现读错了列。
+    advertiser_ids = _advertiser_ids(groups)
+    if not profile_has_login(MODES[mode]["profile"]):
+        warnings.append(
+            f"浏览器里还没登录过（{MODES[mode]['label']}）。"
+            "请先点上面的【登录 / 换账号】，用你自己的 BC 账号登录，再开始搭建。"
+        )
+
     return jsonify(
         {
             "ok": True,
             "filename": f.filename,
             "row_count": len(records),
             "campaign_count": len(groups),
+            "advertiser_ids": advertiser_ids,
             "warnings": warnings,
         }
     )

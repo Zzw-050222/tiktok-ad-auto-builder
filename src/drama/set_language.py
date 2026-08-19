@@ -44,7 +44,25 @@ def _lang_button_text(page):
 
 
 def switch_to_chinese(page, verbose=True):
-    """把语言切成中文。已经是中文则不动。返回 True 表示最终是中文。"""
+    """把语言切成中文。已经是中文则不动。返回 True 表示最终是中文。
+
+    整个函数体包一层「浏览器是不是被关了」的转换：这里面几乎每一行都在碰页面，
+    窗口一关就会在随便哪一行抛 Playwright 的 TargetClosedError，甩给使用者一整个
+    堆栈（实测就是在 `opt.count()` 那行炸的），看着像程序坏了，其实只是窗口被关了。
+    """
+    from src.account import BrowserClosedError, is_browser_closed_error
+
+    try:
+        return _switch_to_chinese(page, verbose=verbose)
+    except Exception as e:
+        if is_browser_closed_error(e):
+            raise BrowserClosedError(
+                "切换界面语言时浏览器窗口被关掉了。跑的过程中请不要关那个窗口。"
+            ) from e
+        raise
+
+
+def _switch_to_chinese(page, verbose=True):
     def say(s):
         if verbose:
             print(s, flush=True)
