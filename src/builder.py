@@ -153,8 +153,14 @@ def fill_ad_identity_copy_url(page, rec, advertiser_id):
     if handle:
         try:
             select_identity(page, handle)
-        except ValueError as e:
-            identity_issue = str(e)
+        except Exception as e:
+            # 这里【刻意catch所有异常】而不只是 ValueError。
+            # 原来那条路是先选素材再选身份，身份下拉那时已经是就绪的；新顺序把它挪到
+            # 了素材之前，下拉可能还没准备好，于是除了我们自己抛的 ValueError，还可能
+            # 冒出 Playwright 的 TimeoutError（click / scroll_into_view 超时）。
+            # 身份不是关键项——短剧那条流程压根不选它，TikTok 会自己填好——所以它失败
+            # 只该变成一句警告，绝不该把整个计划搞挂。
+            identity_issue = f"选身份失败（不影响其它步骤）: {str(e).splitlines()[0][:120]}"
     elif identity_id:
         identity_issue = f"Identity_ID '{identity_id}' 在 identity_id.xlsx 里找不到对应名字"
 
@@ -296,7 +302,7 @@ def _build_row_unique_creatives(
         log=lambda m: print(m, flush=True),
     )
     warnings.extend(chain_warnings)
-    return filled
+    return filled, total_ads
 
 
 def build_campaign_group(
@@ -331,6 +337,9 @@ def build_campaign_group(
     if creative_usage is None:
         creative_usage = {}
     warnings = []
+    # 不为 None 时表示「这个计划有空广告，别发布」——见下面 _build_row_unique_creatives
+    # 的返回值处理。发布前检查它，而不是发出去再失败。
+    skip_publish_reason = None
     try:
         start_new_campaign(page, advertiser_id)
         select_native_growth_objective(page)
@@ -386,9 +395,22 @@ def build_campaign_group(
                         "指定广告组数量。"
                     )
                 else:
-                    _build_row_unique_creatives(
+                    filled, wanted = _build_row_unique_creatives(
                         page, rec, advertiser_id, creative_usage, extra_copies, warnings
                     )
+                    if filled < wanted:
+                        # 有广告没挑到素材。这时候【不要去发布】：平台一定会因为
+                        # 空广告报错，而发布重试要点 6 轮、每轮等 90 秒，白耗好几分钟
+                        # 最后还是失败（2026-08-20 实测就是这样）。
+                        # 也不抛异常——抛了会走到 exit_draft 把草稿整个丢掉，
+                        # 而这里已经建好的广告组是有价值的，留着让人手动补完更划算。
+                        incomplete = (
+                            f"[{rec['Ad Group Name']}] 只有 {filled}/{wanted} 个广告"
+                            "挑到了素材，剩下的是空广告。已跳过发布（空广告一定发不出去），"
+                            "草稿留在后台，请手动补完素材再发布。"
+                        )
+                        warnings.append(incomplete)
+                        skip_publish_reason = incomplete
                     continue
 
             if row_unique and extra_copies > 0 and not budget_set_at_campaign:
@@ -413,6 +435,9 @@ def build_campaign_group(
                     # "复制广告组" at all - duplicate the ad itself instead,
                     # same confirmed signal as the budget branch
                     duplicate_ad_n_times(page, extra_copies)
+
+        if publish and skip_publish_reason:
+            return {"success": False, "error": skip_publish_reason, "warnings": warnings}
 
         if publish:
             # 2026-08-19 换成共用的 publish_all（原来是直接 click「全部发布」再等
