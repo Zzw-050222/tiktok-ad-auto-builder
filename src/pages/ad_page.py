@@ -1,24 +1,6 @@
 import re
 
 
-def _wait_visible_button(page, name, what, timeout_seconds=60):
-    """同上，但按钮走 role 定位。"""
-    from src.pages.common import wait_until
-
-    def visible_one():
-        loc = page.get_by_role("button", name=name, exact=True)
-        n = loc.count()
-        for i in range(min(n, 12)):
-            if loc.nth(i).is_visible():
-                return loc.nth(i)
-        return None
-
-    found = wait_until(page, visible_one, timeout_seconds=timeout_seconds)
-    if not found:
-        raise ValueError(f"等了 {timeout_seconds} 秒还没看到{what}")
-    return found
-
-
 # 读出一个素材复选框所属卡片的【唯一身份】。
 #
 # 去重必须认素材本身，不能认位置。原来的做法是记「已经用掉 N 个」然后跳过列表里
@@ -384,8 +366,171 @@ def select_identity(page, handle_name: str):
 _AUTO_SELECT_RE = re.compile(r"^\s*自动选择\s*$")
 
 
-def _wait_auto_select_box(page, timeout_seconds=120):
-    """等「自动选择」那个框出现并可见，中途反复把表单滚到顶。
+def _auto_select_debug(page):
+    """页面上所有含「自动选择」的文字连可见性 —— 失败时用来分清卡在哪一种情况。"""
+    seen = []
+    try:
+        loc = page.get_by_text("自动选择", exact=False)
+        for i in range(min(loc.count(), 8)):
+            try:
+                seen.append(
+                    f"{(loc.nth(i).inner_text() or '').strip()[:30]!r}"
+                    f"{'(可见)' if loc.nth(i).is_visible() else '(隐藏)'}"
+                )
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return seen or ["（一个都没有）"]
+
+
+def _reload_ad_page(page):
+    """刷新当前广告层，刷完确认「还在广告层」且「这个广告还是空的」。
+
+    草稿是平台自动保存的（页面底部一直写着「草稿已保存」），而且卡在这一步时当前
+    这个广告本来还什么都没填（素材是 fill_ad_core 的第一件事），所以刷新不会丢东西，
+    代价只是等它重新加载。
+
+    刷完必须确认两件事，缺一不可：
+      * 还在广告层 —— 万一刷新把页面带到别处，后面每一步都会莫名其妙地失败
+      * 这个广告还是空的 —— 如果刷新后落到了【别的、已经填好的】广告上，继续往下
+        走就是给同一个广告重复加素材。那是静默的错（发布了才发现），宁可明确中止。
+    """
+    # 万一浏览器弹原生的「确定要离开此页面吗」，接受它（我们就是要重新加载）。
+    # 用完就摘掉监听器，别让它去接后面无关的弹窗。
+    def _accept(d):
+        try:
+            d.accept()
+        except Exception:
+            pass
+
+    page.on("dialog", _accept)
+    try:
+        page.reload(wait_until="domcontentloaded", timeout=90000)
+    finally:
+        try:
+            page.remove_listener("dialog", _accept)
+        except Exception:
+            pass
+
+    page.wait_for_timeout(3000)
+    wait_ad_page_ready(page)
+    from src.pages.common import dismiss_popups
+
+    dismiss_popups(page)
+
+    from src.pages.step_flow import ad_already_filled
+
+    if ad_already_filled(page):
+        raise ValueError(
+            "刷新页面之后落到了一个【已经填过内容】的广告上（文案或落地页非空），"
+            "说明刷新把左侧选中的广告换掉了。继续下去会给同一个广告重复加素材，已中止。"
+            "请手动到后台看这个计划，确认哪个广告还是空的。"
+        )
+
+
+def _open_auto_select(page, find_seconds=10, effect_seconds=12, max_reloads=2):
+    """让「自动选择」那个框变成可点、点开它，返回顶层的「添加创意素材」按钮。
+
+    使用者实测（2026-08-20）：搭到【最后一个广告组】的广告层时，这个框有非常大的
+    概率卡住不给点——已经滚到顶、框就在那儿，但点不动。处理办法是【刷新界面】，
+    刷完就能点了。使用者的原话：「滚到上面然后十秒之内点击不了那个自动选择素材的
+    那个地方你就刷新界面」。
+
+    所以这里是：滚到顶 -> {find_seconds} 秒内找到框 -> 用【真实点击】点它 ->
+    {effect_seconds} 秒内确认真的点开了；做不到就刷新页面重来，最多刷 max_reloads 次。
+
+    关键点：这一步【不能用 robust_click】。robust_click 在普通点击失败后会升级到
+    force 点击、再升级到 JS 直接派发 click 事件——而 JS 派发「只要元素在 DOM 里就
+    一定不报错」，等于把「点不动」这件事整个吞掉：看起来点了，实际页面毫无反应，
+    然后卡在后面等「添加创意素材」上超时。要检测「点不了」，就必须让普通点击把
+    异常抛出来。robust_click 只留给最后一次尝试当兜底。
+
+    「真的点开了」的判据用顶层「添加创意素材」按钮出现——它本来就是紧接着要用的那个
+    按钮，拿它当判据不额外增加对页面结构的假设。另外即使点击报了超时也要先看一眼
+    效果：本项目实测过「普通点击报 TimeoutError、但弹层其实已经打开」这种情况
+    （见 common.click_to_open 的注释），不先看效果就刷新等于白刷一次。
+    """
+    from src.pages.common import robust_click, wait_until
+
+    for attempt in range(max_reloads + 1):
+        last_attempt = attempt == max_reloads
+
+        box = _find_auto_select_box(page, timeout_seconds=find_seconds)
+        if box is None:
+            print(f"        [自动选择] 第{attempt + 1}次：滚到顶后 {find_seconds} 秒内"
+                  f"还是没看到这个框，{'放弃' if last_attempt else '刷新页面重来'}。"
+                  f"页面上含「自动选择」的文字: {_auto_select_debug(page)}", flush=True)
+            if last_attempt:
+                break
+            _reload_ad_page(page)
+            continue
+
+        try:
+            box.scroll_into_view_if_needed(timeout=5000)
+        except Exception:
+            pass
+
+        click_error = None
+        try:
+            # 真实点击，不 force、不 JS —— 点不动就要它抛出来
+            box.click(timeout=find_seconds * 1000)
+        except Exception as e:
+            click_error = str(e).splitlines()[0][:90]
+
+        if click_error and last_attempt:
+            # 最后一次了，才允许升级到 robust_click 兜底（老账号上有「普通点击超时
+            # 但 force/JS 能点开」的情况，不能因为新加的检测把它们挡死）
+            print(f"        [自动选择] 普通点击失败（{click_error}），"
+                  "最后一次尝试，升级到 force / JS 点击兜底", flush=True)
+            try:
+                robust_click(page, box, timeout=8000)
+            except Exception:
+                pass
+
+        btn = wait_until(
+            page,
+            lambda: _first_visible_button_or_none(page, "添加创意素材"),
+            timeout_seconds=effect_seconds,
+        )
+        if btn:
+            if click_error:
+                print(f"        [自动选择] 点击报了「{click_error}」，"
+                      "但「添加创意素材」已经出现，按点开处理", flush=True)
+            return btn
+
+        why = f"点击报错（{click_error}）" if click_error else \
+            f"点击没报错，但 {effect_seconds} 秒内「添加创意素材」没出现"
+        print(f"        [自动选择] 第{attempt + 1}次：{why}，"
+              f"{'放弃' if last_attempt else '刷新页面重来'}", flush=True)
+        if last_attempt:
+            break
+        _reload_ad_page(page)
+
+    raise ValueError(
+        f"「自动选择」这个框试了 {max_reloads + 1} 次（中间刷新了 {max_reloads} 次页面）"
+        "都没能点开，已中止。"
+        f"页面上含「自动选择」的文字: {_auto_select_debug(page)}"
+    )
+
+
+def _first_visible_button_or_none(page, name, limit=12):
+    loc = page.get_by_role("button", name=name, exact=True)
+    try:
+        n = loc.count()
+    except Exception:
+        return None
+    for i in range(min(n, limit)):
+        try:
+            if loc.nth(i).is_visible():
+                return loc.nth(i)
+        except Exception:
+            continue
+    return None
+
+
+def _find_auto_select_box(page, timeout_seconds=10):
+    """找「自动选择」那个可见的框，中途反复把表单滚到顶。找不到返回 None（不抛）。
 
     为什么要边等边滚（2026-08-19 使用者实测）：沿「继续」走到最后一个广告层时，
     平台发现落地页链接还没填，会【自动把页面定位到 URL 那一块】。而「自动选择」在
@@ -394,17 +539,15 @@ def _wait_auto_select_box(page, timeout_seconds=120):
     使用者的说法：「自动选择框在最上面，url 在最下面，这个时候你要是没看到的话
     就滚轮滑到顶就行了」。
 
-    不是滚一次就完事：平台每次校验都可能再把页面拽回 URL 那里，所以每约 5 秒
+    不是滚一次就完事：平台每次校验都可能再把页面拽回 URL 那里，所以每约 3 秒
     重新滚一次顶，直到框出现。
 
-    另外 2026-08-14 记的老问题一并保留：这个框会晚于 10 秒才渲染出来（TikTok 给
-    这块加了推广横幅，整体变慢），所以必须轮询等而不是一次性判定。
-    超时时把页面上所有含「自动选择」的文字打出来——卡在「正在生成自动选择」
-    和「压根没渲染」是两回事，报错里要能分得出来。
+    找不到【不抛异常】：调用方 _open_auto_select 要靠这个来决定「刷新页面重来」，
+    抛异常就没机会重来了。
     """
     from src.pages.common import wait_until
 
-    state = {"n": 0, "last_scroll": None}
+    state = {"n": 0}
 
     def ready():
         state["n"] += 1
@@ -419,34 +562,13 @@ def _wait_auto_select_box(page, timeout_seconds=120):
                     return loc.nth(i)
             except Exception:
                 continue
-        # 第 1 轮就滚一次，之后每约 5 秒（轮询间隔 500ms）再滚一次
-        if state["n"] % 10 == 1:
-            state["last_scroll"] = scroll_ad_form_to_top(page)
+        # 第 1 轮就滚一次，之后每约 3 秒（轮询间隔 500ms）再滚一次。
+        # 比原来的 5 秒勤一点：这里总共只有 10 秒，滚得太少就白等了。
+        if state["n"] % 6 == 1:
+            scroll_ad_form_to_top(page)
         return None
 
-    found = wait_until(page, ready, timeout_seconds=timeout_seconds)
-    if found is not None:
-        return found
-
-    # 失败现场：把含「自动选择」的文字都列出来，好区分「还在生成」和「没渲染」
-    seen = []
-    try:
-        loc = page.get_by_text("自动选择", exact=False)
-        for i in range(min(loc.count(), 8)):
-            try:
-                seen.append(
-                    f"{(loc.nth(i).inner_text() or '').strip()[:30]!r}"
-                    f"{'(可见)' if loc.nth(i).is_visible() else '(隐藏)'}"
-                )
-            except Exception:
-                continue
-    except Exception:
-        pass
-    raise ValueError(
-        f"等了 {timeout_seconds} 秒还没看到可点的「自动选择」框"
-        f"（已反复把表单滚到顶，最后一次滚动结果: {state['last_scroll']}）。"
-        f"页面上含「自动选择」的文字: {seen or '（一个都没有）'}"
-    )
+    return wait_until(page, ready, timeout_seconds=timeout_seconds) or None
 
 
 def select_creative_materials(page, search_term: str, count: int, used_ids=None,
@@ -487,7 +609,7 @@ def select_creative_materials(page, search_term: str, count: int, used_ids=None,
     # 这个守卫单独用是不可靠的：它的判据是「'正在加载中' 不存在就算好了」，而
     # wait_until 是立刻开始轮询的——页面还没【开始】加载时这个字样自然也不存在，
     # 于是第一次轮询就直接放行，等于什么都没等。真正的等待必须落在「目标元素出现」
-    # 上（见下面的 _wait_auto_select_box），这里留着它只是为了在确实处于加载中时
+    # 上（见下面的 _open_auto_select），这里留着它只是为了在确实处于加载中时
     # 多等一会。
     def not_loading():
         loc = page.get_by_text("正在加载中", exact=False)
@@ -496,15 +618,12 @@ def select_creative_materials(page, search_term: str, count: int, used_ids=None,
     wait_until(page, not_loading, timeout_seconds=60)
     page.wait_for_timeout(500)
 
-    auto_select_box = _wait_auto_select_box(page)
-    auto_select_box.scroll_into_view_if_needed(timeout=10000)
-    robust_click(page, auto_select_box, timeout=5000)
-    page.wait_for_timeout(1500)
-
-    # the TOP-LEVEL "+ 添加创意素材" button - NOT the nested "+ 添加内容"
+    # 点开「自动选择」。这一步包含「滚到顶 -> 10 秒内点不动就刷新页面重来」，
+    # 因为搭到最后一个广告组时这个框有很大概率卡住不给点（使用者实测）。
+    # 返回的就是顶层的「+ 添加创意素材」按钮 —— NOT the nested "+ 添加内容"
     # under "你的自有内容" (that path was confirmed inconsistent across
     # accounts, this one is not)
-    top_add_btn = _wait_visible_button(page, "添加创意素材", "顶层的「添加创意素材」按钮")
+    top_add_btn = _open_auto_select(page)
     top_add_btn.scroll_into_view_if_needed(timeout=10000)
     robust_click(page, top_add_btn, timeout=5000)
     page.wait_for_timeout(1200)
