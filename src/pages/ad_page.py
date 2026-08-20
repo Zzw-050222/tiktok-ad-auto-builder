@@ -1,29 +1,6 @@
 import re
 
 
-def _wait_visible(page, text_or_re, what, timeout_seconds=60):
-    """等一个文字元素出现【并且可见】，最多 timeout_seconds，返回那个可见元素。
-
-    比裸的 scroll_into_view_if_needed(timeout=10000) 强在两点：给足这个平台真实
-    需要的时间（见 common.wait_until 的注释），以及在页面上存在多个同文本副本
-    （其中大部分尺寸为 0）时挑出真正能点的那一个 —— 这页面上这种情况很常见。
-    """
-    from src.pages.common import wait_until
-
-    def visible_one():
-        loc = page.get_by_text(text_or_re)
-        n = loc.count()
-        for i in range(min(n, 12)):
-            if loc.nth(i).is_visible():
-                return loc.nth(i)
-        return None
-
-    found = wait_until(page, visible_one, timeout_seconds=timeout_seconds)
-    if not found:
-        raise ValueError(f"等了 {timeout_seconds} 秒还没看到{what}")
-    return found
-
-
 def _wait_visible_button(page, name, what, timeout_seconds=60):
     """同上，但按钮走 role 定位。"""
     from src.pages.common import wait_until
@@ -216,6 +193,81 @@ def _scroll_library_to_bottom(page, tiles):
     return info
 
 
+# 把广告表单自己滚到【顶部】。
+#
+# 做法和 _SCROLL_LIBRARY_JS 一样：沿 DOM 往上找第一个真正可滚动的祖先，直接设
+# scrollTop。绝不用 page.mouse.wheel —— 本项目实测过它会滚到「弹层后面的页面」
+# 而不是目标容器（滚轮事件冒泡到外层去了）。
+_SCROLL_TO_TOP_JS = """
+el => {
+  const chain = [];
+  let n = el;
+  while (n && n !== document.body && n !== document.documentElement) {
+    const s = getComputedStyle(n);
+    const oy = s.overflowY;
+    const scrollable = (oy === 'auto' || oy === 'scroll' || oy === 'overlay');
+    const cls = (n.className && n.className.toString ? n.className.toString() : '').slice(0, 40);
+    if (scrollable && n.scrollHeight > n.clientHeight + 4) {
+      const before = n.scrollTop;
+      n.scrollTop = 0;
+      n.dispatchEvent(new Event('scroll', {bubbles: true}));
+      return {found: true, tag: n.tagName.toLowerCase(), cls: cls,
+              before: Math.round(before), after: Math.round(n.scrollTop)};
+    }
+    chain.push(`${n.tagName.toLowerCase()}.${cls} oy=${oy} sh=${n.scrollHeight} ch=${n.clientHeight}`);
+    n = n.parentElement;
+  }
+  // 表单不在独立滚动容器里时，整页滚到顶也算
+  const se = document.scrollingElement || document.documentElement;
+  const before = se.scrollTop;
+  se.scrollTop = 0;
+  window.scrollTo(0, 0);
+  return {found: before !== se.scrollTop, page: true,
+          before: Math.round(before), after: Math.round(se.scrollTop),
+          chain: chain.slice(0, 10)};
+}
+"""
+
+
+def scroll_ad_form_to_top(page):
+    """把广告层的表单滚到最顶部，返回诊断字典（失败也不抛，调用方自己决定）。
+
+    锚点按「当前最可能已经渲染出来的东西」依次尝试：落地页链接框（使用者实测平台
+    就是把页面定位到这里）、文案框、「广告名称」标题、创意素材区块标题。
+    """
+    anchors = (
+        page.get_by_placeholder("https://www.tiktok.com/minis/"),
+        page.get_by_placeholder("输入文案"),
+        page.get_by_text("广告名称", exact=True),
+        page.get_by_test_id("creative-assets-header-title"),
+    )
+    for loc in anchors:
+        try:
+            n = loc.count()
+        except Exception:
+            continue
+        for i in range(min(n, 8)):
+            el = loc.nth(i)
+            try:
+                if not el.is_visible():
+                    continue
+                info = el.evaluate(_SCROLL_TO_TOP_JS)
+            except Exception:
+                continue
+            page.wait_for_timeout(300)
+            return info
+    # 一个锚点都找不到：退一步整页滚到顶
+    try:
+        page.evaluate(
+            "() => { const se = document.scrollingElement || document.documentElement;"
+            " se.scrollTop = 0; window.scrollTo(0, 0); }"
+        )
+        page.wait_for_timeout(300)
+        return {"found": True, "page": True, "note": "没找到锚点，整页滚到顶"}
+    except Exception as e:
+        return {"found": False, "reason": str(e)[:120]}
+
+
 def wait_ad_page_ready(page):
     """等广告层页面就绪。
 
@@ -228,29 +280,79 @@ def wait_ad_page_ready(page):
 
     所以锚定那个稳定的 data-testid（自定义标签名 ks-text-* 每次加载都随机，
     但 data-testid 稳定），找不到才退回按文字取第一个可见的。
+
+    2026-08-19 又改一处：从 header.first.wait_for(visible) 换成【遍历挑可见的】。
+    沿「继续」把一个计划的多个广告组走一遍时，走过的广告组的表单还留在 DOM 里
+    （不可见），.first 可能正好是那个隐藏副本——等它可见就是干等 90 秒，而页面上
+    明明有一个可见的。这是本项目的老坑（ROAS、地域都栽过），只是这里以前不会遇到
+    多套表单共存所以没暴露。
     """
-    header = page.get_by_test_id("creative-assets-header-title")
-    try:
-        if header.count() > 0:
-            header.first.wait_for(state="visible", timeout=90000)
-        else:
-            page.get_by_text("创意素材", exact=True).first.wait_for(
-                state="visible", timeout=90000
-            )
-    except Exception:
-        # 退一步：只要页面上有这四个字就算就绪，别在等待上卡死整条流程
-        page.get_by_text("创意素材", exact=True).first.wait_for(
-            state="visible", timeout=30000
+    from src.pages.common import wait_until
+
+    def _first_visible_of(loc, limit=12):
+        try:
+            n = loc.count()
+        except Exception:
+            return 0, None
+        for i in range(min(n, limit)):
+            try:
+                if loc.nth(i).is_visible():
+                    return n, loc.nth(i)
+            except Exception:
+                continue
+        return n, None
+
+    def visible_marker():
+        # 优先级要和原来一致：只要 data-testid 还在 DOM 里，就【只等它可见】，
+        # 不能退到按文字找。因为「创意素材」这四个字右侧「建议采纳情况」里也有一份，
+        # 那份可能先可见——退过去就会在广告表单还没渲染好时就判定就绪。
+        n, el = _first_visible_of(page.get_by_test_id("creative-assets-header-title"))
+        if n > 0:
+            return el
+        # testid 压根不在 DOM 里（TikTok 改了结构）才退回按文字找可见的
+        _n, el = _first_visible_of(page.get_by_text("创意素材", exact=True))
+        return el
+
+    if wait_until(page, visible_marker, timeout_seconds=90) is None:
+        raise ValueError(
+            "等了 90 秒广告层还没就绪（没看到可见的「创意素材」区块标题）。"
+            f"当前地址: {page.url[:120]}"
         )
     page.wait_for_timeout(1000)
 
 
 def select_identity(page, handle_name: str):
+    """选身份（TikTok 账号）。
+
+    2026-08-19：下拉框改成【遍历挑可见的】。原来是
+        dropdown = page.locator('[data-testid="..."]')
+        dropdown.scroll_into_view_if_needed(...)   ← 命中多个就抛 strict mode
+    沿「继续」把一个计划的多个广告组走一遍时，走过的广告组的表单还留在 DOM 里，
+    这个 data-testid 就会命中好几个，scroll_into_view_if_needed 直接报
+    「strict mode violation: resolved to N elements」。以前一个计划只走一套表单，
+    永远只有一个，所以没暴露。
+    """
     from src.pages.common import dismiss_popups, robust_click, wait_until
 
     dismiss_popups(page)
 
-    dropdown = page.locator('[data-testid="components-IdentityListComponent-szvjSS"]')
+    def visible_dropdown():
+        loc = page.locator('[data-testid="components-IdentityListComponent-szvjSS"]')
+        try:
+            n = loc.count()
+        except Exception:
+            return None
+        for i in range(min(n, 12)):
+            try:
+                if loc.nth(i).is_visible():
+                    return loc.nth(i)
+            except Exception:
+                continue
+        return None
+
+    dropdown = wait_until(page, visible_dropdown, timeout_seconds=60)
+    if dropdown is None:
+        raise ValueError("等了 60 秒没找到可见的身份（TikTok 账号）下拉框")
     dropdown.scroll_into_view_if_needed(timeout=15000)
     dropdown.click(timeout=10000)
     page.wait_for_timeout(800)
@@ -274,6 +376,77 @@ def select_identity(page, handle_name: str):
     result.scroll_into_view_if_needed(timeout=5000)
     robust_click(page, result, timeout=5000)
     page.wait_for_timeout(500)
+
+
+# 「自动选择」那个框的文案。用锚定正则而不是 exact=True：页面上同时存在
+# 「自动选择功能重磅上线」这个推广横幅，它包含「自动选择」但不能点，锚定首尾
+# 正好把它排除掉。生成中时这个框写的是「正在生成自动选择」，也不该点，同样被排除。
+_AUTO_SELECT_RE = re.compile(r"^\s*自动选择\s*$")
+
+
+def _wait_auto_select_box(page, timeout_seconds=120):
+    """等「自动选择」那个框出现并可见，中途反复把表单滚到顶。
+
+    为什么要边等边滚（2026-08-19 使用者实测）：沿「继续」走到最后一个广告层时，
+    平台发现落地页链接还没填，会【自动把页面定位到 URL 那一块】。而「自动选择」在
+    表单最顶部、URL 在最底部，于是它在视口外，原来那句 60 秒轮询一直等不到，
+    报「等了 60 秒还没看到自动选择的框」（使用者的截图就是这个）。
+    使用者的说法：「自动选择框在最上面，url 在最下面，这个时候你要是没看到的话
+    就滚轮滑到顶就行了」。
+
+    不是滚一次就完事：平台每次校验都可能再把页面拽回 URL 那里，所以每约 5 秒
+    重新滚一次顶，直到框出现。
+
+    另外 2026-08-14 记的老问题一并保留：这个框会晚于 10 秒才渲染出来（TikTok 给
+    这块加了推广横幅，整体变慢），所以必须轮询等而不是一次性判定。
+    超时时把页面上所有含「自动选择」的文字打出来——卡在「正在生成自动选择」
+    和「压根没渲染」是两回事，报错里要能分得出来。
+    """
+    from src.pages.common import wait_until
+
+    state = {"n": 0, "last_scroll": None}
+
+    def ready():
+        state["n"] += 1
+        loc = page.get_by_text(_AUTO_SELECT_RE)
+        try:
+            n = loc.count()
+        except Exception:
+            n = 0
+        for i in range(min(n, 12)):
+            try:
+                if loc.nth(i).is_visible():
+                    return loc.nth(i)
+            except Exception:
+                continue
+        # 第 1 轮就滚一次，之后每约 5 秒（轮询间隔 500ms）再滚一次
+        if state["n"] % 10 == 1:
+            state["last_scroll"] = scroll_ad_form_to_top(page)
+        return None
+
+    found = wait_until(page, ready, timeout_seconds=timeout_seconds)
+    if found is not None:
+        return found
+
+    # 失败现场：把含「自动选择」的文字都列出来，好区分「还在生成」和「没渲染」
+    seen = []
+    try:
+        loc = page.get_by_text("自动选择", exact=False)
+        for i in range(min(loc.count(), 8)):
+            try:
+                seen.append(
+                    f"{(loc.nth(i).inner_text() or '').strip()[:30]!r}"
+                    f"{'(可见)' if loc.nth(i).is_visible() else '(隐藏)'}"
+                )
+            except Exception:
+                continue
+    except Exception:
+        pass
+    raise ValueError(
+        f"等了 {timeout_seconds} 秒还没看到可点的「自动选择」框"
+        f"（已反复把表单滚到顶，最后一次滚动结果: {state['last_scroll']}）。"
+        f"页面上含「自动选择」的文字: {seen or '（一个都没有）'}"
+    )
 
 
 def select_creative_materials(page, search_term: str, count: int, used_ids=None,
@@ -314,7 +487,8 @@ def select_creative_materials(page, search_term: str, count: int, used_ids=None,
     # 这个守卫单独用是不可靠的：它的判据是「'正在加载中' 不存在就算好了」，而
     # wait_until 是立刻开始轮询的——页面还没【开始】加载时这个字样自然也不存在，
     # 于是第一次轮询就直接放行，等于什么都没等。真正的等待必须落在「目标元素出现」
-    # 上（见下面的 _wait_visible），这里留着它只是为了在确实处于加载中时多等一会。
+    # 上（见下面的 _wait_auto_select_box），这里留着它只是为了在确实处于加载中时
+    # 多等一会。
     def not_loading():
         loc = page.get_by_text("正在加载中", exact=False)
         return True if loc.count() == 0 else None
@@ -322,15 +496,7 @@ def select_creative_materials(page, search_term: str, count: int, used_ids=None,
     wait_until(page, not_loading, timeout_seconds=60)
     page.wait_for_timeout(500)
 
-    # 2026-08-14 实测：'自动选择' 这个框会晚于 10 秒才渲染出来（当天 TikTok 给
-    # 这块加了「自动选择功能重磅上线」的推广横幅，整体变慢）。原来直接
-    # scroll_into_view_if_needed(timeout=10000) 就会在 10 秒时抛
-    # TimeoutError，而抓失败现场时元素其实已经在页面上了。改成 60 秒轮询等它
-    # 【可见】，跟本项目其它地方（set_target_roas、区域列表等）统一。
-    #
-    # 用锚定的正则而不是 exact=True：页面上同时存在「自动选择功能重磅上线」这个
-    # 横幅，它包含「自动选择」但不能点。锚定首尾正好把它排除掉。
-    auto_select_box = _wait_visible(page, re.compile(r"^\s*自动选择\s*$"), "自动选择的框")
+    auto_select_box = _wait_auto_select_box(page)
     auto_select_box.scroll_into_view_if_needed(timeout=10000)
     robust_click(page, auto_select_box, timeout=5000)
     page.wait_for_timeout(1500)
@@ -520,47 +686,150 @@ def select_creative_materials(page, search_term: str, count: int, used_ids=None,
     return selected, wrapped
 
 
+def first_visible_input(page, locator, what, timeout_seconds=60):
+    """取第一个【可见】的匹配输入框，并返回那个具体元素。
+
+    为什么不能用 .first：DOM 里会同时存在多个占位符相同的输入框——一个广告组下有
+    多个广告时是这样，沿「继续」把整个计划的广告组走一遍时也是这样（前面走过的
+    广告组的表单还留在 DOM 里，只是不可见）。.first 拿到的可能是隐藏的那个，
+    fill() 填进去页面上什么都不会变。
+
+    实测就是这么错的（短剧那边）：URL 用 field.first.fill() 填到了隐藏的框上，
+    而回读时又是「找第一个可见的」——两者不是同一个元素，于是
+    【回读通过、页面上却是空的】，平台在发布时报缺少 URL。加了验证反而把问题掩盖了。
+    所以填和读必须锁定同一个元素，这个函数就是用来拿到那个元素的。
+    """
+    from src.pages.common import wait_until
+
+    def pick():
+        try:
+            n = locator.count()
+        except Exception:
+            return None
+        for i in range(min(n, 12)):
+            el = locator.nth(i)
+            try:
+                if el.is_visible():
+                    return el
+            except Exception:
+                continue
+        return None
+
+    el = wait_until(page, pick, timeout_seconds=timeout_seconds)
+    if el is None:
+        raise ValueError(f"等了 {timeout_seconds} 秒没找到可见的{what}")
+    return el
+
+
+def commit_input(page, el):
+    """让输入框失焦，把值真正提交给组件。
+
+    使用者实测发现的：填完 URL 之后必须点一下框附近，值才会被保存；而且不能点
+    左侧的广告列表——点那里不保存。原因是 fill() 只把值写进 DOM，组件是在
+    blur / change 时才把值收进自己的状态，平台发布时读的是组件状态。
+
+    这也是为什么【回读验证检测不出这个问题】：input_value() 读的是 DOM 里的值，
+    一直是对的，但组件里是空的，所以发布时平台报缺少 URL。加了验证反而给了
+    假的安全感——回读只能证明「写进去了」，不能证明「被接住了」。
+
+    用 Tab 键失焦而不是去点某个坐标：效果和点空白处一样，但不会误点到别的控件
+    （尤其是左侧列表）上。再补一次显式的 change + blur 事件兜底。
+    """
+    try:
+        page.keyboard.press("Tab")
+    except Exception:
+        pass
+    page.wait_for_timeout(500)
+    try:
+        el.evaluate("""e => {
+          e.dispatchEvent(new Event('input', {bubbles: true}));
+          e.dispatchEvent(new Event('change', {bubbles: true}));
+          if (e.blur) e.blur();
+        }""")
+    except Exception:
+        pass
+    page.wait_for_timeout(400)
+
+
+def fill_and_verify(page, locator, value, what):
+    """填一个输入框并回读确认——填和读【同一个元素】，见 first_visible_input。"""
+    el = first_visible_input(page, locator, what)
+    try:
+        el.scroll_into_view_if_needed(timeout=10000)
+    except Exception:
+        pass
+    page.wait_for_timeout(300)
+    try:
+        el.click(timeout=10000)
+    except Exception:
+        pass
+    el.fill("")
+    el.fill(str(value))
+    page.wait_for_timeout(500)
+    commit_input(page, el)
+
+    got = None
+    try:
+        got = el.input_value(timeout=3000)
+    except Exception:
+        pass
+    if got is not None and got.strip() != str(value).strip():
+        # 再填一次：有时组件把第一次输入吞掉了
+        el.fill("")
+        el.fill(str(value))
+        page.wait_for_timeout(600)
+        commit_input(page, el)
+        try:
+            got = el.input_value(timeout=3000)
+        except Exception:
+            got = None
+    if got is not None and got.strip() != str(value).strip():
+        raise ValueError(
+            f"{what}填完读回的是 {str(got)[:80]!r}，期望 {str(value)[:80]!r}"
+        )
+
+
 def fill_ad_copy(page, ads_text: str):
+    """填文案。
+
+    2026-08-19 改：从 input_box.first.fill() 换成锁定可见元素 + 失焦提交 + 回读
+    （见 first_visible_input / commit_input）。原来只有「一个计划一个广告组」这
+    一种走法时 DOM 里只有一套表单，.first 恰好就是可见那个；新的「多广告组、
+    每组素材不同」会沿「继续」把整个计划走一遍，DOM 里同时留着好几套表单，
+    .first 就可能是隐藏的那个了。
+    """
     from src.pages.common import wait_until
 
     def label_visible():
         loc = page.get_by_text("文案 (0/5)", exact=False)
         if loc.count() == 0:
             loc = page.get_by_text("文案", exact=True)
-        return loc if (loc.count() > 0 and loc.first.is_visible()) else None
+        for i in range(min(loc.count(), 12)):
+            if loc.nth(i).is_visible():
+                return loc.nth(i)
+        return None
 
     label = wait_until(page, label_visible, timeout_seconds=60)
     if not label:
         raise ValueError("一直没找到'文案'区域")
-    label.first.scroll_into_view_if_needed(timeout=10000)
+    try:
+        label.scroll_into_view_if_needed(timeout=10000)
+    except Exception:
+        pass
 
-    def input_ready():
-        loc = page.get_by_placeholder("输入文案")
-        if loc.count() == 0:
-            loc = page.locator(
-                "xpath=//*[contains(normalize-space(text()),'文案')]/following::textarea[1]"
-            )
-        return loc if (loc.count() > 0 and loc.first.is_visible()) else None
-
-    input_box = wait_until(page, input_ready, timeout_seconds=60)
-    if not input_box:
-        raise ValueError("一直没找到文案输入框")
-    input_box.first.click(timeout=10000)
-    input_box.first.fill(ads_text)
-    page.wait_for_timeout(500)
+    box = page.get_by_placeholder("输入文案")
+    if box.count() == 0:
+        box = page.locator(
+            "xpath=//*[contains(normalize-space(text()),'文案')]/following::textarea[1]"
+        )
+    fill_and_verify(page, box, ads_text, "文案")
 
 
 def fill_landing_url(page, url: str):
-    from src.pages.common import wait_until
-
-    def field_visible():
-        loc = page.get_by_placeholder("https://www.tiktok.com/minis/")
-        return loc if (loc.count() > 0 and loc.first.is_visible()) else None
-
-    field = wait_until(page, field_visible, timeout_seconds=60)
-    if not field:
-        raise ValueError("一直没找到落地页链接输入框")
-    field.first.scroll_into_view_if_needed(timeout=10000)
-    field.first.fill("")
-    field.first.fill(url)
-    page.wait_for_timeout(500)
+    """填落地页链接（TikTok Minis URL）。同 fill_ad_copy，改成锁定可见元素后再填。"""
+    fill_and_verify(
+        page,
+        page.get_by_placeholder("https://www.tiktok.com/minis/"),
+        url,
+        "落地页链接",
+    )

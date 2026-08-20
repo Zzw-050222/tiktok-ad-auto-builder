@@ -199,7 +199,7 @@ def _friendly_fatal(exc):
     return traceback.format_exc()
 
 
-def _run_build(xlsx_path, publish, mode):
+def _run_build(xlsx_path, publish, mode, unique_creatives=False):
     try:
         records = load_rows(xlsx_path)
         groups = group_by_campaign(records)
@@ -263,6 +263,7 @@ def _run_build(xlsx_path, publish, mode):
                         rows,
                         publish=publish,
                         creative_usage=creative_usage,
+                        unique_creatives=unique_creatives,
                     )
                 result["campaign_name"] = campaign_name
                 result["ad_group_count"] = len(rows)
@@ -481,9 +482,15 @@ def run():
     if mode not in MODES:
         return jsonify({"ok": False, "error": f"未知模式: {mode}"}), 400
 
+    # 「每组素材不同」只对小游戏有意义：短剧那条流程本来就是一个广告组一个广告、
+    # 逐个挑素材，不存在「复制广告组把素材带走」这个问题。
+    unique_creatives = bool(payload.get("unique_creatives", False)) and mode == "minigame"
+
     _reset_state()
     t = threading.Thread(
-        target=_run_build, args=(str(UPLOAD_PATH), publish, mode), daemon=True
+        target=_run_build,
+        args=(str(UPLOAD_PATH), publish, mode, unique_creatives),
+        daemon=True,
     )
     t.start()
     return jsonify({"ok": True})

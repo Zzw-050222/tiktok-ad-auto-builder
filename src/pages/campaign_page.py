@@ -133,3 +133,175 @@ def continue_step(page):
     btn.wait_for(state="visible", timeout=60000)
     btn.click(timeout=10000)
     page.wait_for_timeout(3000)
+
+
+# ---------------------------------------------------------------- 发布
+#
+# 这一段原来只在 src/drama/pages/campaign_page.py 里有（短剧那边先遇到的），
+# 2026-08-19 挪到这里共用。两个原因：
+#
+#  * 小游戏原来的发布是 get_by_role("button", name="全部发布").click()，命中多个
+#    元素时 Playwright 会抛 strict mode violation。使用者的截图里，单个广告组时
+#    「全部发布」是个普通按钮，而【多个广告组时它旁边多了一个下拉箭头】——
+#    新的「多广告组、每组素材不同」正好是多广告组的场景，等于把这个隐患摆到了
+#    主路径上。这里逐个挑【可见】的按钮，不会撞 strict mode。
+#  * 使用者实测的平台 bug：一个计划里广告数量大于 1 时，点发布有概率弹报错框，
+#    处理办法是点框右下角的「修复」，等它消失再点发布，还报错就重复。新的搭法
+#    会在一个计划里建好几个广告，撞上这个 bug 的概率更高。
+#
+# 逻辑与短剧那份完全一致，只是搬了个位置——短剧那边现在从这里 import。
+
+_PUBLISH_BUTTON_NAMES = ("全部发布", "发布")
+
+
+def _first_visible_button(page, name, limit=5):
+    """按名字找第一个【可见】的按钮，没有就返回 None。
+
+    不用 .first：这个后台经常同时存在同名的隐藏副本，而且 .click() 在命中多个时
+    会直接抛 strict mode violation。
+    """
+    btn = page.get_by_role("button", name=name, exact=True)
+    try:
+        n = btn.count()
+    except Exception:
+        return None
+    for i in range(min(n, limit)):
+        try:
+            if btn.nth(i).is_visible():
+                return btn.nth(i)
+        except Exception:
+            continue
+    return None
+
+
+def _click_publish(page):
+    """点发布按钮。返回点中的按钮名，一个都没有就返回 None。
+
+    两个名字都试：主流程上是「全部发布」，报错弹层修复之后有时只剩「发布」。
+    """
+    from src.pages.common import robust_click
+
+    for name in _PUBLISH_BUTTON_NAMES:
+        btn = _first_visible_button(page, name)
+        if btn is not None:
+            robust_click(page, btn, timeout=15000)
+            return name
+    return None
+
+
+def _visible_button_names(page, limit=25):
+    """当前页面上所有可见按钮的文字。用于「发布卡住了」时看清实际有哪些按钮。"""
+    out = []
+    try:
+        btn = page.get_by_role("button")
+        for i in range(min(btn.count(), limit)):
+            try:
+                if not btn.nth(i).is_visible():
+                    continue
+                t = (btn.nth(i).inner_text() or "").replace("\n", " ").strip()
+                if t:
+                    out.append(t[:24])
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
+def _dialog_texts(page, limit=3):
+    """当前可见弹层/对话框里的文字，截断后返回。"""
+    out = []
+    try:
+        loc = page.locator('[role="dialog"]:visible, [class*="modal"]:visible')
+        for i in range(min(loc.count(), limit)):
+            try:
+                t = (loc.nth(i).inner_text() or "").replace("\n", " ").strip()
+                if t:
+                    out.append(t[:180])
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
+def publish_all(page, timeout_seconds=300, max_fix_rounds=5):
+    """点「全部发布」并等到真的发布完（页面自己跳回计划列表）。
+
+    平台有个已知的概率性 bug（使用者实测）：一个计划里广告数量大于 1 时，
+    点发布有概率弹出报错框。处理办法是点那个框右下角的「修复」，然后再点发布；
+    还报错就再重复一次。所以这里是「点发布 -> 看到修复按钮就点它 -> 等它消失 ->
+    再点发布」的循环，最多 max_fix_rounds 轮。
+
+    绝不要自己强行跳转去计划列表：中途跳走会打断发布，计划实际不会上线。
+    慢没关系，早跳不行。
+    """
+    from src.pages.common import robust_click, wait_until
+
+    for round_no in range(max_fix_rounds + 1):
+        clicked = _click_publish(page)
+        if clicked is None:
+            raise ValueError(
+                "找不到「全部发布」或「发布」按钮，无法发布。"
+                f"当前地址: {page.url[:120]}"
+            )
+
+        def outcome():
+            # 顺序要紧：已经跳回列表就算成功，其次才看有没有报错要修
+            if "manage/campaign" in page.url:
+                return "done"
+            if _first_visible_button(page, "修复") is not None:
+                return "fix"
+            try:
+                loc = page.get_by_text("广告创建中", exact=False)
+                if loc.count() > 0 and loc.first.is_visible():
+                    return "publishing"
+            except Exception:
+                pass
+            return None
+
+        what = wait_until(page, outcome, timeout_seconds=90)
+
+        if what == "fix":
+            fix = _first_visible_button(page, "修复")
+            print(f"          [发布] 第{round_no + 1}轮弹出报错，点「修复」", flush=True)
+            if fix is not None:
+                robust_click(page, fix, timeout=15000)
+
+            # 必须等这个窗口【真的消失】再去点发布。
+            # 不能点完修复就立刻点发布：弹层还在时它会盖住发布按钮，点了不生效，
+            # 白耗一轮重试次数。使用者的说法就是「点修复然后消失之后再点发布」。
+            gone = wait_until(
+                page,
+                lambda: True if _first_visible_button(page, "修复") is None else None,
+                timeout_seconds=60,
+            )
+            if gone:
+                print("          [发布] 修复窗口已消失，重新点发布", flush=True)
+            else:
+                print("          [发布] 修复窗口点了之后 60 秒还没消失，"
+                      f"当前可见按钮: {_visible_button_names(page)}", flush=True)
+            page.wait_for_timeout(1500)
+            continue
+
+        if what is None:
+            # 既没跳走、也没报错框、也没看到进度提示。把【当前可见的按钮和弹层
+            # 文字】打出来——一出现就能立刻看出该认什么，不用再猜。
+            print(f"          [发布] 第{round_no + 1}轮点完没有明确结果。"
+                  f"当前可见按钮: {_visible_button_names(page)}", flush=True)
+            print(f"          [发布] 弹层文字: {_dialog_texts(page)}", flush=True)
+            page.wait_for_timeout(2000)
+            continue
+
+        # publishing 或 done：等页面【自己】跳回计划列表
+        page.wait_for_url(
+            lambda url: "manage/campaign" in url, timeout=timeout_seconds * 1000
+        )
+        wait_until(page, lambda: "manage/campaign" in page.url, timeout_seconds=30)
+        page.wait_for_timeout(1500)
+        return
+
+    raise ValueError(
+        f"点了 {max_fix_rounds + 1} 轮发布（每次报错都点过「修复」），"
+        "页面始终没有跳回计划列表。请手动到后台看这个计划的状态，别重复跑。"
+    )

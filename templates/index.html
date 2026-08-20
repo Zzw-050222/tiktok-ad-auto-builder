@@ -354,6 +354,22 @@
         <div class="sub2" id="publishHint">会真实开始投放并花钱。关掉则只搭到草稿，需要你自己去后台点「全部发布」。</div>
       </label>
     </div>
+    <div class="switch-row" id="uniqueRow">
+      <label class="switch">
+        <input type="checkbox" id="uniqueCheck">
+        <span class="slider"></span>
+      </label>
+      <label class="switch-text" for="uniqueCheck">
+        一个计划多个广告组时，<b>每个广告组用不同素材</b>
+        <div class="sub2">
+          只对「Ad Group Name Number &gt; 0」的行生效：先复制出空广告组，再沿右下角
+          「继续」逐个广告挑素材，而不是把第一个广告连素材一起复制。<br>
+          需要 <b>Creative Number &gt; 2</b> 且填好 <b>CreativeFile</b>，否则素材是
+          TikTok「自动选择」的，重不重复不由程序决定。<br>
+          表格里有 <b>素材不重复</b> 列时按行覆盖这个开关。
+        </div>
+      </label>
+    </div>
     <button class="run" id="runBtn" disabled>开始搭建</button>
   </div>
 
@@ -386,7 +402,8 @@ const MODE_INFO = {
   minigame: {
     cols: `<b>必填列</b>：${REQUIRED}<br><b>可选列</b>：Business Center Account ID、`
       + `optimization_event、Ad Group Name Number（复制份数）、CreativeFile、`
-      + `Creative Number（>2 时改为手动搜索挑素材）`,
+      + `Creative Number（>2 时改为手动搜索挑素材）、`
+      + `素材不重复（按行覆盖下面那个开关，填 1/是 或 0/否）`,
   },
   drama: {
     cols: `<b>必填列</b>：${REQUIRED}<br><b>可选列</b>：Ad Group Name Number（复制份数）、`
@@ -404,6 +421,8 @@ let acctTimer = null;
 
 function renderModeInfo() {
   colsHint.innerHTML = MODE_INFO[mode].cols;
+  // 「每组素材不同」只对小游戏有意义：短剧那条流程本来就是逐个广告挑素材的
+  $('uniqueRow').style.display = (mode === 'minigame') ? 'flex' : 'none';
 }
 renderModeInfo();
 
@@ -557,7 +576,11 @@ runBtn.addEventListener('click', () => {
   fetch('/run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ publish: publishCheck.checked, mode: mode }),
+    body: JSON.stringify({
+      publish: publishCheck.checked,
+      mode: mode,
+      unique_creatives: $('uniqueCheck').checked,
+    }),
   })
     .then(r => r.json())
     .then(data => {

@@ -32,6 +32,11 @@ REQUIRED_COLUMNS = [
 #   （不是单纯复制内容——复制出来素材会一样）。空或 1 表示只建一个广告。
 #   多写几种拼法是因为这一列由使用者手填，叫法不固定；load_rows 会把不在这个
 #   名单里的列【整列丢掉】，名字对不上就等于这一列不存在，还很难发现。
+# - Unique Creative（同义写法见下）: 小游戏专用的按行开关，1/是/true 表示这一行的
+#   多个广告组要【各用不同素材】——复制广告组的时机提前到素材还没加之前，
+#   然后沿「继续」逐个广告填。空着就跟随网页上那个全局开关。
+#   只有在 Ad Group Name Number > 0 时才有意义，而且需要 Creative Number > 2
+#   （否则素材是 TikTok「自动选择」的，重不重复不由我们决定）。
 OPTIONAL_COLUMNS = [
     "Business Center Account ID",
     "optimization_event",
@@ -43,6 +48,11 @@ OPTIONAL_COLUMNS = [
     "Ad Name Number",
     "ad_number",
     "广告数量",
+    "Unique Creative",
+    "Unique Creatives",
+    "unique_creative",
+    "素材不重复",
+    "每组素材不同",
 ]
 
 

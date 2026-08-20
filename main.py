@@ -9,10 +9,13 @@ from src.excel_loader import group_by_campaign, load_rows
 PUBLISH = True
 
 
-def main(xlsx_path):
+def main(xlsx_path, unique_creatives=False):
     records = load_rows(xlsx_path)
     groups = group_by_campaign(records)
     print(f"共读取到 {len(records)} 行，分成 {len(groups)} 个计划。")
+    if unique_creatives:
+        print("已开启「每个广告组用不同素材」（--unique-creatives）："
+              "带 Ad Group Name Number 的行会先复制出空广告组，再沿「继续」逐个挑素材。")
 
     results = []
 
@@ -38,6 +41,7 @@ def main(xlsx_path):
                 rows,
                 publish=PUBLISH,
                 creative_usage=creative_usage,
+                unique_creatives=unique_creatives,
             )
             result["campaign_name"] = campaign_name
             results.append(result)
@@ -62,5 +66,8 @@ def main(xlsx_path):
 
 
 if __name__ == "__main__":
-    xlsx = sys.argv[1] if len(sys.argv) > 1 else "examples/sample_campaign_template.xlsx"
-    main(xlsx)
+    argv = sys.argv[1:]
+    unique = "--unique-creatives" in argv
+    args = [a for a in argv if not a.startswith("--")]
+    xlsx = args[0] if args else "examples/sample_campaign_template.xlsx"
+    main(xlsx, unique_creatives=unique)

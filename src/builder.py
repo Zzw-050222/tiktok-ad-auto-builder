@@ -22,6 +22,7 @@ from src.pages.campaign_page import (
     add_new_ad_group,
     continue_step,
     fill_campaign_details,
+    publish_all,
     select_native_growth_objective,
     start_new_campaign,
 )
@@ -167,8 +168,100 @@ def _extra_copies_for(rec):
         return 0
 
 
+# 「每个广告组用不同素材」这个开关的 Excel 列名（同义写法都认）。
+# 表格里没有这一列、或者格子是空的，就沿用调用方传进来的 unique_creatives 默认值。
+# 多写几种拼法是因为这一列由使用者手填、叫法不固定；load_rows 会把不在
+# OPTIONAL_COLUMNS 名单里的列【整列丢掉】，名字对不上等于这一列不存在，还很难发现。
+_UNIQUE_COLUMNS = (
+    "Unique Creative",
+    "Unique Creatives",
+    "unique_creative",
+    "素材不重复",
+    "每组素材不同",
+)
+
+_TRUE_WORDS = {"1", "true", "yes", "y", "是", "对", "开", "√", "on"}
+_FALSE_WORDS = {"0", "false", "no", "n", "否", "不", "关", "off", "×"}
+
+
+def _unique_creatives_for(rec, default=False):
+    """这一行要不要走「每个广告组素材都不同」的搭法。
+
+    行内的列优先于全局开关：一张表里可能只有部分计划需要这么搭。
+    读不懂的值当成没填（用 default），不猜——猜错的后果是搭出一堆重复素材的广告，
+    而那是要花钱的。
+    """
+    for name in _UNIQUE_COLUMNS:
+        val = rec.get(name)
+        if val in (None, ""):
+            continue
+        s = str(val).strip().lower()
+        if s in _TRUE_WORDS:
+            return True
+        if s in _FALSE_WORDS:
+            return False
+    return bool(default)
+
+
+def _build_row_unique_creatives(
+    page, rec, advertiser_id, creative_usage, extra_copies, warnings
+):
+    """一个计划里建多个广告组，每个广告组下一个广告，且每个广告的素材【都不一样】。
+
+    和原来那条路的唯一区别是【复制的时机】：
+
+        原来： 填广告组 -> 继续 -> 填广告(含素材) -> 复制广告组
+               副本把素材一起复制走了，所有广告组用的是同一批素材
+        现在： 填广告组 -> 继续 -> 【立刻复制广告组】-> 沿「继续」逐个填广告
+               复制时素材还没加，副本是空的，每个广告各自选自己的素材
+
+    复制完之后怎么走由 step_flow.walk_and_fill_ads 负责——它每到一站先读清自己在
+    广告组层还是广告层，而不是照抄点击次数。理由见那个模块的说明。
+
+    调用前提：page 已经停在【第一个广告组的广告层】（continue_step +
+    wait_ad_page_ready 之后），而且这个广告还没填任何东西。
+    """
+    from src.pages.step_flow import walk_and_fill_ads
+
+    total_ads = extra_copies + 1
+
+    # 素材必须是手动挑的，否则「不重复」根本无从谈起：Creative Number <= 2 时
+    # fill_ad_core 压根不碰素材，沿用 TikTok 的「自动选择」——那是平台自己挑的，
+    # 挑成什么样、会不会重复都不由我们决定。这种情况下这个开关是无效的，
+    # 必须说出来，不能让人以为已经生效了。
+    if _creative_count_for(rec) <= 2:
+        warnings.append(
+            f"[{rec['Ad Group Name']}] 开了「每组素材不同」，但 Creative Number 是 "
+            f"{rec.get('Creative Number')!r}（<=2 时不手动挑素材，用的是 TikTok 的"
+            "「自动选择」）。素材由平台决定，这个开关等于没生效。"
+            "要让它起作用，请把 Creative Number 填成大于 2 的数，并填好 CreativeFile。"
+        )
+
+    print(f"      [每组素材不同] 先复制 {extra_copies} 个空广告组"
+          f"（此时素材还没加，副本是空的），共 {total_ads} 个广告要填", flush=True)
+    duplicate_ad_group_n_times(page, rec["Ad Group Name"], extra_copies)
+
+    def fill_one(index):
+        issue = fill_ad_core(page, rec, advertiser_id, creative_usage)
+        return f"[{rec['Ad Group Name']} 第{index + 1}个广告] {issue}" if issue else None
+
+    filled, chain_warnings = walk_and_fill_ads(
+        page, fill_one, expected_ads=total_ads,
+        log=lambda m: print(m, flush=True),
+    )
+    warnings.extend(chain_warnings)
+    return filled
+
+
 def build_campaign_group(
-    page, advertiser_id, campaign_name, budget, rows, publish=False, creative_usage=None
+    page,
+    advertiser_id,
+    campaign_name,
+    budget,
+    rows,
+    publish=False,
+    creative_usage=None,
+    unique_creatives=False,
 ):
     """rows: list of record dicts sharing the same Campaign Name. Each row gets its
     own ad group + ad built from scratch (row 0 uses the ad group created by the
@@ -181,6 +274,12 @@ def build_campaign_group(
     de-duplication offset (see fill_ad_core) - pass the SAME dict into every call
     within one run; a fresh dict is created here only if the caller doesn't
     care about that (e.g. building a single standalone campaign).
+
+    unique_creatives: 「每个广告组用不同素材」。默认 False = 保持原有行为不变。
+    开启后，带 'Ad Group Name Number' 的行改成「先复制空广告组，再沿「继续」逐个
+    填广告」——这样每个广告组下的广告各自挑自己的素材，而不是复制同一批。
+    可以被表格里的 Unique Creative 列按行覆盖（见 _unique_creatives_for）。
+
     Returns dict: {"success": bool, "error": str|None, "warnings": [str]}
     """
     if creative_usage is None:
@@ -216,11 +315,32 @@ def build_campaign_group(
 
             continue_step(page)
             wait_ad_page_ready(page)
+
+            extra_copies = _extra_copies_for(rec)
+            row_unique = _unique_creatives_for(rec, default=unique_creatives)
+
+            # 「每组素材不同」这条路要在【素材还没加之前】复制广告组，所以它必须
+            # 抢在 fill_ad_core 前面分岔——一旦填了素材就晚了，副本会把素材带走。
+            if row_unique and extra_copies > 0 and budget_set_at_campaign:
+                _build_row_unique_creatives(
+                    page, rec, advertiser_id, creative_usage, extra_copies, warnings
+                )
+                continue
+
+            if row_unique and extra_copies > 0 and not budget_set_at_campaign:
+                # 这类账号（计划层没有预算区）压根没有「复制广告组」这个功能，
+                # 只能复制广告本身——而复制广告一定会把素材一起带走，做不到不重复。
+                # 明确降级并说清楚，不要假装开关生效了。
+                warnings.append(
+                    f"[{rec['Ad Group Name']}] 这个账号在计划层级没有预算区，"
+                    "也就没有「复制广告组」功能，只能复制广告本身（素材会一样）。"
+                    "「每组素材不同」这次没能生效。"
+                )
+
             issue = fill_ad_core(page, rec, advertiser_id, creative_usage)
             if issue:
                 warnings.append(f"[{rec['Ad Group Name']}] {issue}")
 
-            extra_copies = _extra_copies_for(rec)
             if extra_copies > 0:
                 if budget_set_at_campaign:
                     duplicate_ad_group_n_times(page, rec["Ad Group Name"], extra_copies)
@@ -231,20 +351,17 @@ def build_campaign_group(
                     duplicate_ad_n_times(page, extra_copies)
 
         if publish:
-            page.get_by_role("button", name="全部发布", exact=True).click(timeout=15000)
-            # wait for the "恭喜！广告创建中...X%" progress modal to appear, then
-            # wait for the whole publish to actually finish and the page to
-            # navigate back to the campaign list ON ITS OWN. Never force-navigate
-            # ourselves here - jumping away mid-publish interrupts it and the
-            # campaign doesn't actually go live. Slow is fine; premature is not.
-            try:
-                page.get_by_text("广告创建中", exact=False).wait_for(
-                    state="visible", timeout=15000
-                )
-            except Exception:
-                pass
-            page.wait_for_url(lambda url: "manage/campaign" in url, timeout=300000)
-            page.wait_for_timeout(1500)
+            # 2026-08-19 换成共用的 publish_all（原来是直接 click「全部发布」再等
+            # 页面自己跳回计划列表）。两个原因，都由新的「多广告组、每组素材不同」
+            # 暴露出来：
+            #  * 使用者的截图里，单个广告组时「全部发布」是普通按钮，多个广告组时
+            #    旁边多了下拉箭头——命中多个元素时 .click() 会抛 strict mode
+            #    violation。publish_all 逐个挑可见的，不会撞。
+            #  * 一个计划里广告数量大于 1 时，点发布有概率弹报错框（使用者实测的
+            #    平台 bug），要点「修复」等它消失再发。原来的代码遇到这个只会
+            #    干等 300 秒然后超时，整次搭建白费。
+            # 「等页面自己跳回计划列表、绝不自己强行跳转」这条关键行为没有变。
+            publish_all(page)
         else:
             warnings.append("未发布 - 草稿已保存，需手动检查并点击'全部发布'")
 
