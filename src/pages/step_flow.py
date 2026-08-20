@@ -87,33 +87,22 @@ def current_step(page):
     return None
 
 
-def _visible_input_value(page, placeholder):
-    """某个占位符对应的【可见】输入框里现在的值；框不在或读不出返回 None。"""
-    el = _first_visible(page.get_by_placeholder(placeholder), limit=10)
-    if el is None:
-        return None
-    try:
-        return el.input_value(timeout=3000)
-    except Exception:
-        return None
-
-
-def ad_already_filled(page):
-    """这个广告层是不是已经被我们填过了（文案或落地页非空）。
-
-    这个判断是整条链的安全绳。链条会把【整个计划】的广告组都走一遍，而不只是
-    当前这一行的；一个计划里有多行、或者因为点击没生效在同一站转了一圈时，
-    都可能再次走到已经填好的广告上。没有这道判断就会往同一个广告里【重复添加
-    素材】——那是静默的错，发布出去才发现。
-
-    只认「有没有值」，不认「值对不对」：不同行的文案本来就不一样，
-    而这里要回答的问题只是「这个广告轮到我填了吗」。
-    """
-    for placeholder in (_COPY_PLACEHOLDER, _URL_PLACEHOLDER):
-        v = _visible_input_value(page, placeholder)
-        if v and v.strip():
-            return True
-    return False
+# 【不要】再写一个「靠文案/落地页有没有值来判断这个广告填过没有」的函数。
+# 试过，是错的，而且错得很隐蔽（2026-08-20 使用者实测）：
+#
+#   * 小游戏的落地页链接【平台会自己带出来】（小游戏一选好就填上了），所以那个框
+#     从一开始就是非空的。于是「非空 = 填过了」在第一个广告上就成立，链条把每一个
+#     广告都当成「已经填过」跳过——日志里那句「预期填 5 个广告，实际只填了 0 个」
+#     就是这么来的，而且它不报错，只是一声不响地什么都没干。
+#   * 新顺序下更不可能用：现在是【先】把文案和 URL 写完再复制广告组，所有副本
+#     一出生就带着文案和 URL，这个判据永远为真。
+#
+# 所以「这个广告轮到我了吗」改成按【数】来定：链条按顺序走，走到第 k 个广告层就
+# 填第 k 个，填够 expected_ads 就停。代价是这条路要求「链条上的广告层都是本行刚
+# 复制出来的」——一个计划里有多行时不满足，所以 builder 那边直接不让多行走这条路
+# （见 build_campaign_group 里的 len(rows) > 1 分支），而不是在这里赌。
+_COPY_PLACEHOLDER_UNUSED = _COPY_PLACEHOLDER
+_URL_PLACEHOLDER_UNUSED = _URL_PLACEHOLDER
 
 
 def find_continue_button(page):
@@ -133,27 +122,22 @@ def find_publish_button(page):
 
 
 def _wait_next_step(page, prev_step, timeout_seconds=90):
-    """点完「继续」之后，等页面真的换到下一站。
+    """点完「继续」之后，等页面真的换到下一站（层级从广告组层 <-> 广告层翻过去）。
 
-    「换到下一站」有两种表现，都要认：
-      * 层级变了（广告组层 <-> 广告层）—— 链条正常交替时就是这样
-      * 层级没变，但这个广告层是空的 —— 一个广告组下有多个广告时会出现
-        广告层 -> 广告层，层级不变但确实换了一个广告
+    链条正常走就是这样交替的。等不到就返回 None，由调用方决定怎么办。
 
-    等不到就返回 None，由调用方决定是报错还是接着看当前状态（当前状态本身
-    是安全的：填过的广告会被 ad_already_filled 挡住）。
+    注意这里【只认层级翻转】。原来还有一条「层级没变但广告是空的也算换了一站」的
+    分支，用来应付一个广告组下有多个广告（广告层 -> 广告层）的情况——那条分支靠的是
+    「广告是空的」这个判据，而那个判据本身是错的（见上面那段说明），所以一起去掉了。
+    这条路本来就是「一个广告组一个广告」，用不到它。
     """
     from src.pages.common import wait_until
 
     def changed():
         step = current_step(page)
-        if step is None:
+        if step is None or step == prev_step:
             return None
-        if step != prev_step:
-            return step
-        if step == "ad" and not ad_already_filled(page):
-            return step
-        return None
+        return step
 
     return wait_until(page, changed, timeout_seconds=timeout_seconds)
 
@@ -197,21 +181,30 @@ def walk_and_fill_ads(page, fill_one, expected_ads, log=None, max_steps=None):
             f"当前地址: {page.url[:120]}"
         )
 
+    # 当前这一站的内容处理过了没有。必须有这个标志：某次「继续」没生效时我们会停在
+    # 原地重试，如果不记住「这一站已经处理过」，重试就会给同一个广告【再加一遍素材】。
+    handled = False
+
     for n in range(max_steps):
-        if step == "ad":
-            if ad_already_filled(page):
-                say(f"        [链条] 第{n + 1}站是广告层，但内容已经填过，跳过")
-            else:
-                say(f"        [链条] 第{n + 1}站是广告层，开始填第 {filled + 1}/"
-                    f"{expected_ads} 个广告")
-                issue = fill_one(filled)
-                filled += 1
-                if issue:
-                    warnings.append(issue)
-        elif step == "adgroup":
-            # 副本把广告组层的设置（小游戏 / ROAS / 地域 / 预算）全继承了，
-            # 这一站什么都不用改，直接往下走。
-            say(f"        [链条] 第{n + 1}站是广告组层（副本已继承设置），直接继续")
+        if not handled:
+            if step == "ad":
+                if filled >= expected_ads:
+                    # 已经填够了。正常不该走到这里（链条上的广告层数量就等于
+                    # expected_ads），走到了说明平台多插了一站，宁可跳过也别多加素材。
+                    say(f"        [链条] 第{n + 1}站又是广告层，但 {expected_ads} 个"
+                        "已经填够了，跳过（不重复加素材）")
+                else:
+                    say(f"        [链条] 第{n + 1}站是广告层，开始挑第 {filled + 1}/"
+                        f"{expected_ads} 个广告的素材")
+                    issue = fill_one(filled)
+                    filled += 1
+                    if issue:
+                        warnings.append(issue)
+            elif step == "adgroup":
+                # 副本把广告组层的设置（小游戏 / ROAS / 地域 / 预算）全继承了，
+                # 这一站什么都不用改，直接往下走。
+                say(f"        [链条] 第{n + 1}站是广告组层（副本已继承设置），直接继续")
+            handled = True
 
         btn = find_continue_button(page)
         if btn is None:
@@ -240,17 +233,28 @@ def walk_and_fill_ads(page, fill_one, expected_ads, log=None, max_steps=None):
         page.wait_for_timeout(1500)
         nxt = _wait_next_step(page, prev, timeout_seconds=90)
         if nxt is None:
-            # 没等到明确的变化。不硬失败：当前状态本身是安全的（填过的广告会被
-            # ad_already_filled 挡住），继续往下走，真正走不动会撞上 max_steps。
-            nxt = current_step(page)
-            say(f"        [链条] 点了「继续」但 90 秒内没看出层级变化"
-                f"（现在读到 {nxt}），按当前状态继续")
-            if nxt is None:
+            # 90 秒都没看出层级翻转。可能是这一次「继续」没生效，也可能页面渲染慢。
+            # 这里【不能】把当前状态当成新的一站往下走：现在判断「填过没有」靠的是
+            # 计数，把同一个广告层数成两站就会给它加两遍素材。所以停在原地重试，
+            # 由 max_steps 兜底。
+            cur = current_step(page)
+            if cur is None:
                 raise ValueError(
-                    "点了「继续」之后读不出在哪一层，已中止，避免往错误的广告里填内容。"
+                    "点了「继续」之后读不出在哪一层，已中止，避免往错误的广告里加素材。"
                     f"当前地址: {page.url[:120]}"
                 )
-        step = nxt
+            step = cur
+            if cur == prev:
+                # 原地没动：保持 handled=True，下一轮只重新点一次「继续」，
+                # 【不再】重复处理这一站的内容
+                say(f"        [链条] 点了「继续」但 90 秒内层级没变（还是 {cur}），"
+                    "只重新点「继续」，不重复处理这一站")
+                continue
+            # 层级其实变了，只是 _wait_next_step 没等到 —— 当成新的一站处理
+            handled = False
+        else:
+            step = nxt
+            handled = False
     else:
         raise ValueError(
             f"沿「继续」走了 {max_steps} 站还没走到末尾（已填 {filled}/{expected_ads} "

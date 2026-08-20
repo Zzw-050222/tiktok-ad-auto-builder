@@ -41,6 +41,154 @@ def fill_adgroup_budget_if_present(page, daily_budget):
     return True
 
 
+# 把小游戏下拉【列表自己】往下滚一段。
+#
+# 2026-08-20 换掉原来的 page.mouse.wheel。使用者实测报「小游戏在列表里一直没找到，
+# 滚动到底也没有」，而那个账号的列表里确实有这个游戏、只是排在很后面——
+# 也就是【压根没滚动成功】。
+#
+# 原因就是本项目在素材库那边早就记过的同一个坑（见 ad_page._SCROLL_LIBRARY_JS 的
+# 注释）：mouse.wheel 只是往鼠标位置派发滚轮事件，一旦事件冒泡出去，滚的就是
+# 【弹层后面的页面】而不是列表本身——表现是后面的页面在动、列表一动不动。
+# 当时素材库那边的结论是「直接设 scrollTop 才是确定性的」，这里照搬。
+#
+# 和素材库那边的区别：这里是【一段一段往下滚】而不是一次滚到底，因为要边滚边看
+# 目标行有没有出现，而列表是懒加载的、一次跳到底会跳过中间的行。
+_SCROLL_DROPDOWN_JS = """
+(el, step) => {
+  const chain = [];
+  let n = el;
+  while (n && n !== document.body && n !== document.documentElement) {
+    const s = getComputedStyle(n);
+    const oy = s.overflowY;
+    const scrollable = (oy === 'auto' || oy === 'scroll' || oy === 'overlay');
+    const cls = (n.className && n.className.toString ? n.className.toString() : '').slice(0, 40);
+    if (scrollable && n.scrollHeight > n.clientHeight + 4) {
+      const before = n.scrollTop;
+      n.scrollTop = Math.min(before + step, n.scrollHeight);
+      n.dispatchEvent(new Event('scroll', {bubbles: true}));
+      return {found: true, tag: n.tagName.toLowerCase(), cls: cls,
+              before: Math.round(before), after: Math.round(n.scrollTop),
+              scrollHeight: Math.round(n.scrollHeight),
+              clientHeight: Math.round(n.clientHeight),
+              atBottom: (n.scrollTop + n.clientHeight + 4 >= n.scrollHeight)};
+    }
+    chain.push(`${n.tagName.toLowerCase()}.${cls} oy=${oy} sh=${n.scrollHeight} ch=${n.clientHeight}`);
+    n = n.parentElement;
+  }
+  return {found: false, chain: chain.slice(0, 10)};
+}
+"""
+
+_ID_ROW_SELECTOR = "text=/ID[:：]/"
+
+
+def _dropdown_row_count(page):
+    try:
+        return page.locator(_ID_ROW_SELECTOR).count()
+    except Exception:
+        return 0
+
+
+def _first_visible_id_row(page, limit=40):
+    """下拉里第一个【可见】的「ID: xxx」行，用来当滚动容器的锚点。
+
+    必须挑可见的：这个后台大量存在同文本的隐藏副本，锚在隐藏元素上
+    evaluate 出来的祖先链不是我们要滚的那个容器。
+    """
+    loc = page.locator(_ID_ROW_SELECTOR)
+    try:
+        n = loc.count()
+    except Exception:
+        return None
+    for i in range(min(n, limit)):
+        try:
+            if loc.nth(i).is_visible():
+                return loc.nth(i)
+        except Exception:
+            continue
+    return None
+
+
+def _scroll_dropdown_for_mini(page, target_match, tt_mini_id, max_rounds=200):
+    """打开下拉之后一段一段往下滚，边滚边找目标那一行。找到就返回，找不到返回 None。
+
+    使用者的说法：「小列表下面有很多游戏 得一个个找」。所以这里的停止条件是
+    【真的滚到底、而且不再加载出新行】，而不是原来那种「看起来没变化就放弃」——
+    原来 45 轮里只要连续 6 轮行文本没变就 break，而 mouse.wheel 压根没滚动列表时
+    行文本当然一直不变，于是约 5 秒就放弃了，报「滚动到底也没有」。
+    """
+    step = 320          # 一次滚约一屏的一小半，别跳过中间的行
+    bottom_rounds = 0
+    prev_count = -1
+    no_anchor_rounds = 0
+    last_info = None
+
+    for r in range(max_rounds):
+        match = target_match()
+        if match:
+            print(f"          [小游戏] 滚了 {r} 段之后找到 ID {tt_mini_id}", flush=True)
+            return match
+
+        anchor = _first_visible_id_row(page)
+        if anchor is None:
+            # 下拉可能还在渲染。原来这里是直接 break（等于一次都不滚就放弃），
+            # 改成给它一点时间——但也不能无限等。
+            no_anchor_rounds += 1
+            if no_anchor_rounds > 20:
+                print("          [小游戏] 下拉里一直看不到任何「ID: xxx」行，"
+                      "多半是下拉没展开", flush=True)
+                return None
+            page.wait_for_timeout(500)
+            continue
+        no_anchor_rounds = 0
+
+        try:
+            info = anchor.evaluate(_SCROLL_DROPDOWN_JS, step)
+        except Exception as e:
+            info = {"found": False, "chain": [f"evaluate 出错: {str(e)[:60]}"]}
+        last_info = info
+
+        if not info.get("found"):
+            # 找不到可滚动祖先 —— 退回滚轮当兜底（老行为），至少不比以前差
+            try:
+                box = anchor.bounding_box()
+                if box:
+                    page.mouse.move(box["x"] + box["width"] / 2,
+                                    box["y"] + box["height"] / 2)
+                    page.mouse.wheel(0, step)
+            except Exception:
+                pass
+            page.wait_for_timeout(600)
+            continue
+
+        page.wait_for_timeout(600)
+        cur_count = _dropdown_row_count(page)
+
+        if r % 10 == 0:
+            print(f"          [小游戏] 滚动中… scrollTop {info['before']}->{info['after']}"
+                  f"/{info['scrollHeight']}，当前 {cur_count} 行", flush=True)
+
+        if info.get("atBottom"):
+            # 到底了还要再等等：列表是懒加载的，到底之后可能再冒出一批。
+            # 只有「到底 + 行数不再增加」连续若干轮，才算真的没有了。
+            if cur_count == prev_count:
+                bottom_rounds += 1
+                if bottom_rounds >= 8:
+                    print(f"          [小游戏] 已到列表底部且不再加载新行，"
+                          f"共 {cur_count} 行，没有 ID {tt_mini_id}", flush=True)
+                    return None
+            else:
+                bottom_rounds = 0
+        else:
+            bottom_rounds = 0
+        prev_count = cur_count
+
+    print(f"          [小游戏] 滚了 {max_rounds} 段还没到底，放弃。"
+          f"最后一次滚动: {last_info}", flush=True)
+    return None
+
+
 def select_mini_game(page, mini_game_name: str, tt_mini_id: str):
     """Matches by tt_mini_id ONLY, never by mini_game_name text - confirmed live
     that a name-only match is unsafe: the Excel naming convention often embeds
@@ -95,43 +243,15 @@ def select_mini_game(page, mini_game_name: str, tt_mini_id: str):
     match = wait_until(page, target_match, timeout_seconds=15)
 
     if not match:
-        # No-search accounts: scroll the list to bring more rows into view.
-        # Anchor the mouse on an ACTUAL VISIBLE row's position (never a
-        # hardcoded page coordinate) before wheeling - confirmed live that a
-        # hardcoded coordinate can miss the popup entirely and scroll the
-        # whole underlying page instead, closing the picker.
-        stable_rounds = 0
-        prev_signature = None
-        for _ in range(45):
-            match = target_match()
-            if match:
-                break
-
-            anchor = page.locator("text=/ID[:：]/").first
-            if anchor.count() == 0:
-                break
-            box = anchor.bounding_box()
-            if not box:
-                break
-            page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-            page.mouse.wheel(0, 350)
-            page.wait_for_timeout(700)
-
-            # the visible set of "ID: xxx" rows not changing for several
-            # rounds in a row means we've hit the true end of the list (or of
-            # whatever's been lazy-loaded so far) - stop instead of spinning.
-            signature = tuple(page.locator("text=/ID[:：]/").all_inner_texts())
-            if signature == prev_signature:
-                stable_rounds += 1
-                if stable_rounds >= 6:
-                    break
-            else:
-                stable_rounds = 0
-            prev_signature = signature
+        match = _scroll_dropdown_for_mini(page, target_match, tt_mini_id)
 
     if not match:
+        rows = _dropdown_row_count(page)
         raise ValueError(
-            f"小游戏 '{mini_game_name}' (ID: {tt_mini_id}) 在列表里一直没找到，滚动到底也没有"
+            f"小游戏 '{mini_game_name}' (ID: {tt_mini_id}) 在下拉列表里一直没找到。"
+            f"已经把列表滚到底，最后看到 {rows} 个「ID: xxx」行。"
+            "如果这个数字明显偏小（比如只有个位数），说明下拉根本没展开或者没滚动成功；"
+            "如果数字很大，那就是这个 ID 确实不在这个账号的小游戏列表里。"
         )
 
     target = match.first

@@ -104,6 +104,65 @@ def _creative_count_for(rec):
         return 0
 
 
+def fill_ad_creatives(page, rec, advertiser_id, creative_usage, patient=False):
+    """广告层里【只挑素材】的那一半。返回一句警告或 None。
+
+    patient=True 时给素材库更多耐心（每批等 40 秒、每批加载完静置 3 秒再选）。
+    「每组素材不同」那条路会开这个：使用者的要求是「选素材的时候一定要慢，要往下
+    滚动找素材，尽量不要选择重复的」——宁可慢，也别选重复。这个值和短剧那边一致。
+    """
+    count = _creative_count_for(rec)
+    if count <= 2:
+        return None
+
+    search_term = str(rec.get("CreativeFile") or "").strip()
+    if not search_term:
+        return "Creative Number 大于2但 CreativeFile 是空的，跳过手动选素材"
+
+    key = (str(advertiser_id), str(rec["TT Mini ID"]))
+    used = creative_usage.setdefault(key, set())
+    kwargs = {"batch_wait_seconds": 40, "batch_settle_ms": 3000} if patient else {}
+    selected, wrapped = select_creative_materials(
+        page, search_term, count, used_ids=used, **kwargs
+    )
+    if selected < count:
+        return (
+            f"素材库搜索 '{search_term}' 只选到 {selected}/{count} 个素材"
+            f"（整个素材库连一轮都凑不满 {count} 个）"
+        )
+    if wrapped:
+        return (
+            f"素材库搜索 '{search_term}' 的素材已全部用过一轮，"
+            f"本条广告开始复用（素材不够，这是预期的兜底行为）"
+        )
+    return None
+
+
+def fill_ad_identity_copy_url(page, rec, advertiser_id):
+    """广告层里【除素材以外】的那一半：身份、文案、落地页链接。返回警告或 None。
+
+    「每组素材不同」那条路会【先】调这个再复制广告组：副本会把文案和 URL 一起继承
+    过去（那正是想要的，各广告的文案/URL 本来就一样），只有素材是空的，之后逐个挑。
+    这么排还顺带治好了一个老毛病——平台发现落地页链接是空的就会自动把页面拽到
+    URL 那一块，害得顶部的「自动选择」框在视口外、甚至卡住不给点。URL 先填好，
+    平台就没有理由跳了。
+    """
+    identity_id = str(rec["Identity_ID"]).strip() if rec["Identity_ID"] else ""
+    handle = resolve_identity(identity_id) if identity_id else None
+    identity_issue = None
+    if handle:
+        try:
+            select_identity(page, handle)
+        except ValueError as e:
+            identity_issue = str(e)
+    elif identity_id:
+        identity_issue = f"Identity_ID '{identity_id}' 在 identity_id.xlsx 里找不到对应名字"
+
+    fill_ad_copy(page, str(rec["ads_text"]))
+    fill_landing_url(page, str(rec["TT Mini URL"]))
+    return identity_issue
+
+
 def fill_ad_core(page, rec, advertiser_id, creative_usage):
     """creative_usage: dict shared across an entire run (NOT per-campaign),
     keyed by (advertiser_id, tt_mini_id) -> set of material identities already
@@ -118,43 +177,12 @@ def fill_ad_core(page, rec, advertiser_id, creative_usage):
 
     去重范围是【单次运行】：每次运行新建一个空 dict，所以同一次运行内不会重复，
     跨运行会重新开始。素材不够时会绕回头复用，保证每条广告都选满。
+
+    顺序（素材 -> 身份/文案/URL）刻意保持不变，这是原来一直在跑的那条路。
+    「每组素材不同」那条路要的顺序不同，它自己分别调下面那两个函数。
     """
-    creative_issue = None
-    count = _creative_count_for(rec)
-    if count > 2:
-        search_term = str(rec.get("CreativeFile") or "").strip()
-        if search_term:
-            key = (str(advertiser_id), str(rec["TT Mini ID"]))
-            used = creative_usage.setdefault(key, set())
-            selected, wrapped = select_creative_materials(
-                page, search_term, count, used_ids=used
-            )
-            if selected < count:
-                creative_issue = (
-                    f"素材库搜索 '{search_term}' 只选到 {selected}/{count} 个素材"
-                    f"（整个素材库连一轮都凑不满 {count} 个）"
-                )
-            elif wrapped:
-                creative_issue = (
-                    f"素材库搜索 '{search_term}' 的素材已全部用过一轮，"
-                    f"本条广告开始复用（素材不够，这是预期的兜底行为）"
-                )
-        else:
-            creative_issue = "Creative Number 大于2但 CreativeFile 是空的，跳过手动选素材"
-
-    identity_id = str(rec["Identity_ID"]).strip() if rec["Identity_ID"] else ""
-    handle = resolve_identity(identity_id) if identity_id else None
-    identity_issue = None
-    if handle:
-        try:
-            select_identity(page, handle)
-        except ValueError as e:
-            identity_issue = str(e)
-    elif identity_id:
-        identity_issue = f"Identity_ID '{identity_id}' 在 identity_id.xlsx 里找不到对应名字"
-
-    fill_ad_copy(page, str(rec["ads_text"]))
-    fill_landing_url(page, str(rec["TT Mini URL"]))
+    creative_issue = fill_ad_creatives(page, rec, advertiser_id, creative_usage)
+    identity_issue = fill_ad_identity_copy_url(page, rec, advertiser_id)
 
     issues = [i for i in (creative_issue, identity_issue) if i]
     return "；".join(issues) if issues else None
@@ -208,27 +236,35 @@ def _build_row_unique_creatives(
 ):
     """一个计划里建多个广告组，每个广告组下一个广告，且每个广告的素材【都不一样】。
 
-    和原来那条路的唯一区别是【复制的时机】：
+    顺序（2026-08-20 使用者定的，比上一版又提前了一步）：
 
-        原来： 填广告组 -> 继续 -> 填广告(含素材) -> 复制广告组
-               副本把素材一起复制走了，所有广告组用的是同一批素材
-        现在： 填广告组 -> 继续 -> 【立刻复制广告组】-> 沿「继续」逐个填广告
-               复制时素材还没加，副本是空的，每个广告各自选自己的素材
+        ① 在第一个广告组的广告层，先把【除素材以外】的都写完：身份、文案、URL
+        ② 再复制广告组 —— 副本把文案和 URL 一起继承走（那正是想要的，各广告的
+           文案/URL 本来就一样），只有素材是空的
+        ③ 沿「继续」一个个广告【只选素材】，慢慢滚动找，尽量不重复
+
+    对比前两版：
+        最早：  填广告组 -> 继续 -> 填广告(含素材) -> 复制
+                副本把素材也复制走了，所有广告组用同一批素材 ← 使用者要解决的问题
+        上一版：填广告组 -> 继续 -> 立刻复制 -> 沿「继续」逐个填全部
+                素材是分开的了，但每个广告的 URL 都还是空的，平台就一直把页面拽到
+                URL 那一块，顶部的「自动选择」框跑到视口外、甚至卡住不给点
+        现在：  URL 先填好，平台没理由再跳，「自动选择」就在眼前
 
     复制完之后怎么走由 step_flow.walk_and_fill_ads 负责——它每到一站先读清自己在
     广告组层还是广告层，而不是照抄点击次数。理由见那个模块的说明。
 
     调用前提：page 已经停在【第一个广告组的广告层】（continue_step +
-    wait_ad_page_ready 之后），而且这个广告还没填任何东西。
+    wait_ad_page_ready 之后）。
     """
     from src.pages.step_flow import walk_and_fill_ads
 
     total_ads = extra_copies + 1
 
     # 素材必须是手动挑的，否则「不重复」根本无从谈起：Creative Number <= 2 时
-    # fill_ad_core 压根不碰素材，沿用 TikTok 的「自动选择」——那是平台自己挑的，
-    # 挑成什么样、会不会重复都不由我们决定。这种情况下这个开关是无效的，
-    # 必须说出来，不能让人以为已经生效了。
+    # 不碰素材，沿用 TikTok 的「自动选择」——那是平台自己挑的，挑成什么样、会不会
+    # 重复都不由我们决定。这种情况下这个开关是无效的，必须说出来，不能让人以为
+    # 已经生效了。
     if _creative_count_for(rec) <= 2:
         warnings.append(
             f"[{rec['Ad Group Name']}] 开了「每组素材不同」，但 Creative Number 是 "
@@ -237,13 +273,23 @@ def _build_row_unique_creatives(
             "要让它起作用，请把 Creative Number 填成大于 2 的数，并填好 CreativeFile。"
         )
 
-    print(f"      [每组素材不同] 先复制 {extra_copies} 个空广告组"
-          f"（此时素材还没加，副本是空的），共 {total_ads} 个广告要填", flush=True)
+    # ① 除素材以外先写完
+    print("      [每组素材不同] ① 先写身份/文案/URL（素材留到后面逐个挑）", flush=True)
+    issue = fill_ad_identity_copy_url(page, rec, advertiser_id)
+    if issue:
+        warnings.append(f"[{rec['Ad Group Name']}] {issue}")
+
+    # ② 再复制 —— 此时素材还是空的，副本只继承文案/URL
+    print(f"      [每组素材不同] ② 复制 {extra_copies} 个广告组"
+          f"（文案/URL 会被继承，素材是空的），共 {total_ads} 个广告要挑素材", flush=True)
     duplicate_ad_group_n_times(page, rec["Ad Group Name"], extra_copies)
 
+    # ③ 沿「继续」逐个只挑素材，patient=True（宁可慢也别选重复）
     def fill_one(index):
-        issue = fill_ad_core(page, rec, advertiser_id, creative_usage)
-        return f"[{rec['Ad Group Name']} 第{index + 1}个广告] {issue}" if issue else None
+        got = fill_ad_creatives(
+            page, rec, advertiser_id, creative_usage, patient=True
+        )
+        return f"[{rec['Ad Group Name']} 第{index + 1}个广告] {got}" if got else None
 
     filled, chain_warnings = walk_and_fill_ads(
         page, fill_one, expected_ads=total_ads,
@@ -321,11 +367,29 @@ def build_campaign_group(
 
             # 「每组素材不同」这条路要在【素材还没加之前】复制广告组，所以它必须
             # 抢在 fill_ad_core 前面分岔——一旦填了素材就晚了，副本会把素材带走。
+            #
+            # 只在【这个计划只有一行】时走：这条路靠「沿「继续」走到第 k 个广告层
+            # 就挑第 k 个广告的素材」来防重复，前提是链条上的广告层都是本行刚复制
+            # 出来的。一个计划里有多行时，链条会先经过前面那些行【已经挑好素材】的
+            # 广告组，按数就会数到它们头上，给已经有素材的广告再加一遍。
+            # 本来想靠「这个广告填过没有」来分辨，但那个判据是错的（小游戏的落地页
+            # 平台会自己带出来，而且新顺序下文案/URL 是复制前就填好的），
+            # 详见 step_flow 里那段说明。所以这里不赌，直接降级并说清楚。
             if row_unique and extra_copies > 0 and budget_set_at_campaign:
-                _build_row_unique_creatives(
-                    page, rec, advertiser_id, creative_usage, extra_copies, warnings
-                )
-                continue
+                if len(rows) > 1:
+                    warnings.append(
+                        f"[{rec['Ad Group Name']}] 这个计划在表格里有 {len(rows)} 行，"
+                        "「每组素材不同」这次没有生效（按原来的方式搭，副本的素材会一样）。"
+                        "原因：那条路要沿「继续」把整个计划的广告组走一遍逐个挑素材，"
+                        "多行时会走到别行已经挑好素材的广告上、给它重复加素材。"
+                        "想用这个功能的话，把同一个计划拆成一行、用 Ad Group Name Number "
+                        "指定广告组数量。"
+                    )
+                else:
+                    _build_row_unique_creatives(
+                        page, rec, advertiser_id, creative_usage, extra_copies, warnings
+                    )
+                    continue
 
             if row_unique and extra_copies > 0 and not budget_set_at_campaign:
                 # 这类账号（计划层没有预算区）压根没有「复制广告组」这个功能，
