@@ -43,17 +43,63 @@ def fill_adgroup_budget_if_present(page, daily_budget):
 
 # 把小游戏下拉【列表自己】往下滚一段。
 #
-# 2026-08-20 换掉原来的 page.mouse.wheel。使用者实测报「小游戏在列表里一直没找到，
-# 滚动到底也没有」，而那个账号的列表里确实有这个游戏、只是排在很后面——
-# 也就是【压根没滚动成功】。
+# 2026-08-20 实测（探针 src/dev_probe_mini_scroll.py + src/dev_probe_mini_list.py，
+# 拿一个真实广告主跑出来的）得到的事实，很重要，别再按猜的改：
 #
-# 原因就是本项目在素材库那边早就记过的同一个坑（见 ad_page._SCROLL_LIBRARY_JS 的
-# 注释）：mouse.wheel 只是往鼠标位置派发滚轮事件，一旦事件冒泡出去，滚的就是
-# 【弹层后面的页面】而不是列表本身——表现是后面的页面在动、列表一动不动。
-# 当时素材库那边的结论是「直接设 scrollTop 才是确定性的」，这里照搬。
+#   * 这个下拉【没有独立的滚动容器】。整个文档里唯一能滚的是表单面板
+#     creation-right-pane-scroller（oy=auto, sh=2269, ch=930）。
+#   * 51 个小游戏【一次性全在 DOM 里】，y 坐标一直排到 3510（视口才 1000 高），
+#     也就是说它们只是在视口外，不是没加载。
+#   * 逐个试滚文档里每一个可滚动元素，「ID: xxx」行数【一个都不会变多】——
+#     压根不存在「滚动加载更多」这回事。
 #
-# 和素材库那边的区别：这里是【一段一段往下滚】而不是一次滚到底，因为要边滚边看
-# 目标行有没有出现，而列表是懒加载的、一次跳到底会跳过中间的行。
+# 而 target_match 是按 locator.count() 判断的、跟可见性无关，所以【只要那个 ID 在
+# 列表里，第一次就能找到，根本不需要滚动】。反过来说：找不到就是真的没有。
+#
+# 那为什么之前报「已经把列表滚到底」？因为沿祖先链往上找第一个可滚动元素，找到的是
+# 上面那个表单面板——滚它对列表毫无影响，而它很快就到底了，于是报「到底了」。
+# 使用者在旁边看到的就是「根本没有滚动」（列表没动，动的是整个表单）。
+#
+# 所以滚动这段【只作为兜底保留】：万一别的账号的下拉确实是懒加载的，滚一滚还能救；
+# 但绝不能再为它耗上几分钟。判据改成「连续几轮行数不再变多就收工」。
+
+
+# 从下拉里把所有「名字 + ID」抠出来。找不到目标时用它生成【有用的】报错。
+_MINI_LIST_JS = """
+() => {
+  const out = [];
+  for (const el of document.querySelectorAll('*')) {
+    const own = Array.from(el.childNodes)
+      .filter(n => n.nodeType === 3)
+      .map(n => n.textContent.trim()).join('').trim();
+    const m = own.match(/ID[:：]\\s*(\\S+)$/);
+    if (!m) continue;
+    let row = el, text = own;
+    for (let k = 0; k < 5 && row; k++) {
+      const t = (row.textContent || '').replace(/\\s+/g, ' ').trim();
+      if (t.length > 0 && t.length <= 120) text = t;
+      if (t.length > 120) break;
+      row = row.parentElement;
+    }
+    out.push({id: m[1], text: text});
+  }
+  const seen = new Set(), uniq = [];
+  for (const o of out) {
+    if (seen.has(o.id)) continue;
+    seen.add(o.id);
+    uniq.push(o);
+  }
+  return uniq;
+}
+"""
+
+
+def _mini_list_snapshot(page):
+    """下拉里现在能看到的全部小游戏，[(id, 整行文字), …]。读不出返回空表。"""
+    try:
+        return [(o["id"], o["text"]) for o in page.evaluate(_MINI_LIST_JS)]
+    except Exception:
+        return []
 _SCROLL_DROPDOWN_JS = """
 (el, step) => {
   const chain = [];
@@ -110,32 +156,29 @@ def _first_visible_id_row(page, limit=40):
     return None
 
 
-def _scroll_dropdown_for_mini(page, target_match, tt_mini_id, max_rounds=200):
-    """打开下拉之后一段一段往下滚，边滚边找目标那一行。找到就返回，找不到返回 None。
+def _scroll_dropdown_for_mini(page, target_match, tt_mini_id, max_rounds=24):
+    """兜底：万一某个账号的下拉是懒加载的，滚一滚看会不会冒出更多行。
 
-    使用者的说法：「小列表下面有很多游戏 得一个个找」。所以这里的停止条件是
-    【真的滚到底、而且不再加载出新行】，而不是原来那种「看起来没变化就放弃」——
-    原来 45 轮里只要连续 6 轮行文本没变就 break，而 mouse.wheel 压根没滚动列表时
-    行文本当然一直不变，于是约 5 秒就放弃了，报「滚动到底也没有」。
+    实测（见上面那段）这个账号根本不需要滚——51 个游戏一次性全在 DOM 里。所以这里
+    的唯一判据就是【滚了之后「ID: xxx」行数有没有变多】：连续 6 轮不变多就收工，
+    别再为一件没用的事耗时间（上一版会滚 200 段、白耗两分钟，还误报「已滚到底」）。
     """
-    step = 320          # 一次滚约一屏的一小半，别跳过中间的行
-    bottom_rounds = 0
-    prev_count = -1
+    step = 400
+    no_growth = 0
+    prev_count = _dropdown_row_count(page)
     no_anchor_rounds = 0
-    last_info = None
 
     for r in range(max_rounds):
         match = target_match()
         if match:
-            print(f"          [小游戏] 滚了 {r} 段之后找到 ID {tt_mini_id}", flush=True)
+            if r:
+                print(f"          [小游戏] 滚了 {r} 段之后找到 ID {tt_mini_id}", flush=True)
             return match
 
         anchor = _first_visible_id_row(page)
         if anchor is None:
-            # 下拉可能还在渲染。原来这里是直接 break（等于一次都不滚就放弃），
-            # 改成给它一点时间——但也不能无限等。
             no_anchor_rounds += 1
-            if no_anchor_rounds > 20:
+            if no_anchor_rounds > 10:
                 print("          [小游戏] 下拉里一直看不到任何「ID: xxx」行，"
                       "多半是下拉没展开", flush=True)
                 return None
@@ -144,49 +187,69 @@ def _scroll_dropdown_for_mini(page, target_match, tt_mini_id, max_rounds=200):
         no_anchor_rounds = 0
 
         try:
-            info = anchor.evaluate(_SCROLL_DROPDOWN_JS, step)
-        except Exception as e:
-            info = {"found": False, "chain": [f"evaluate 出错: {str(e)[:60]}"]}
-        last_info = info
-
-        if not info.get("found"):
-            # 找不到可滚动祖先 —— 退回滚轮当兜底（老行为），至少不比以前差
-            try:
-                box = anchor.bounding_box()
-                if box:
-                    page.mouse.move(box["x"] + box["width"] / 2,
-                                    box["y"] + box["height"] / 2)
-                    page.mouse.wheel(0, step)
-            except Exception:
-                pass
-            page.wait_for_timeout(600)
-            continue
-
+            anchor.evaluate(_SCROLL_DROPDOWN_JS, step)
+        except Exception:
+            pass
         page.wait_for_timeout(600)
+
         cur_count = _dropdown_row_count(page)
-
-        if r % 10 == 0:
-            print(f"          [小游戏] 滚动中… scrollTop {info['before']}->{info['after']}"
-                  f"/{info['scrollHeight']}，当前 {cur_count} 行", flush=True)
-
-        if info.get("atBottom"):
-            # 到底了还要再等等：列表是懒加载的，到底之后可能再冒出一批。
-            # 只有「到底 + 行数不再增加」连续若干轮，才算真的没有了。
-            if cur_count == prev_count:
-                bottom_rounds += 1
-                if bottom_rounds >= 8:
-                    print(f"          [小游戏] 已到列表底部且不再加载新行，"
-                          f"共 {cur_count} 行，没有 ID {tt_mini_id}", flush=True)
-                    return None
-            else:
-                bottom_rounds = 0
+        if cur_count > prev_count:
+            no_growth = 0
+            print(f"          [小游戏] 滚动后新增了行：{prev_count} -> {cur_count}",
+                  flush=True)
         else:
-            bottom_rounds = 0
+            no_growth += 1
+            if no_growth >= 6:
+                return None
         prev_count = cur_count
 
-    print(f"          [小游戏] 滚了 {max_rounds} 段还没到底，放弃。"
-          f"最后一次滚动: {last_info}", flush=True)
     return None
+
+
+def _mini_not_found_message(page, mini_game_name, tt_mini_id):
+    """找不到目标小游戏时，生成一条【能照着做】的报错。
+
+    以前这句话只说「在列表里一直没找到，滚动到底也没有」，等于什么线索都没给，
+    使用者只能猜是程序问题还是表格问题——2026-08-20 就为此白排查了一轮
+    （最后实测发现是这个广告主的列表里真的没有那个游戏）。
+
+    现在把下拉里实际有什么读出来，分三种情况分别说清：
+      ① 名字对得上但 ID 不一样  -> 表格里的 TT Mini ID 填错了，并直接给出正确的 ID
+      ② 名字压根不在            -> 广告主 ID 不对，或这个游戏没授权给这个账号
+      ③ 一行都读不出来          -> 下拉没展开，这才是程序的问题
+    """
+    items = _mini_list_snapshot(page)
+    if not items:
+        return (
+            f"小游戏 '{mini_game_name}' (ID: {tt_mini_id}) 没能选上："
+            "下拉列表里一行都读不出来，多半是下拉没有展开（这属于程序/页面问题，"
+            "不是表格问题）。"
+        )
+
+    want = (mini_game_name or "").strip().lower()
+    same_name = [(mid, text) for mid, text in items if want and want in text.lower()]
+
+    head = (
+        f"小游戏 '{mini_game_name}' (ID: {tt_mini_id}) 不在广告主的小游戏列表里。"
+        f"这个账号一共有 {len(items)} 个小游戏，已经全部读出来对过，没有这个 ID。"
+    )
+
+    if same_name:
+        lines = "；".join(f"{text}" for _mid, text in same_name[:5])
+        return (
+            head + "\n"
+            f"但是名字里含 '{mini_game_name}' 的有 {len(same_name)} 个：{lines}\n"
+            "-> 多半是表格里的 TT Mini ID 填错了。把上面这行括号里的 ID 抄进表格即可。"
+            "（程序刻意不按名字自动选：名字相近的游戏太多，选错就是真花钱。）"
+        )
+
+    sample = "、".join(text.split("小游戏")[0].strip() for _mid, text in items[:12])
+    return (
+        head + "\n"
+        f"列表里也没有任何名字含 '{mini_game_name}' 的游戏。前 12 个是：{sample} …\n"
+        "-> 请检查表格里的 Advertiser ID 是不是填成了别的账号，"
+        "或者这个小游戏还没授权给这个广告主。"
+    )
 
 
 def select_mini_game(page, mini_game_name: str, tt_mini_id: str):
@@ -246,13 +309,7 @@ def select_mini_game(page, mini_game_name: str, tt_mini_id: str):
         match = _scroll_dropdown_for_mini(page, target_match, tt_mini_id)
 
     if not match:
-        rows = _dropdown_row_count(page)
-        raise ValueError(
-            f"小游戏 '{mini_game_name}' (ID: {tt_mini_id}) 在下拉列表里一直没找到。"
-            f"已经把列表滚到底，最后看到 {rows} 个「ID: xxx」行。"
-            "如果这个数字明显偏小（比如只有个位数），说明下拉根本没展开或者没滚动成功；"
-            "如果数字很大，那就是这个 ID 确实不在这个账号的小游戏列表里。"
-        )
+        raise ValueError(_mini_not_found_message(page, mini_game_name, tt_mini_id))
 
     target = match.first
     target.scroll_into_view_if_needed(timeout=5000)
