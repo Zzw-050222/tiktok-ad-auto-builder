@@ -81,7 +81,14 @@ rm -f "$ZIP_NAME"
 echo "==> 生成 $ZIP_NAME （$(du -h "$ZIP_NAME" | cut -f1)，$(git ls-files | wc -l | tr -d ' ') 个程序文件）"
 
 # ---- 5. 保险：确认 zip 里没有登录态 / 业务数据 ----
-BAD=$(unzip -Z1 "$ZIP_NAME" | grep -Ei 'browser_profile|/venv/|logs/|uploads/|短剧|商品库|搭建表|Identity_id|260810' || true)
+#
+# examples/ 要排除在检查之外：那里面是【故意放在公开仓库里的示例模板】（假数据），
+# 文件名恰好带 identity 之类的字样。第一次跑这个脚本就被它误报中止了。
+# 真实的身份表是根目录下的 Identity_id.xlsx，所以用 ^auto-builder/ 锚定根目录。
+BAD=$(unzip -Z1 "$ZIP_NAME" \
+  | grep -v '^auto-builder/examples/' \
+  | grep -Ei 'browser_profile|/venv/|^auto-builder/logs/|^auto-builder/uploads/|^auto-builder/data/|短剧|商品库|搭建表|^auto-builder/Identity_id\.xlsx|260810' \
+  || true)
 if [ -n "$BAD" ]; then
   echo "✗ zip 里出现了不该有的东西，已中止，请检查 .gitignore："
   echo "$BAD"
