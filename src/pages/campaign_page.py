@@ -1,9 +1,32 @@
 def start_new_campaign(page, advertiser_id: str):
-    page.goto(
-        f"https://ads.tiktok.com/i18n/dashboard?aadvid={advertiser_id}",
-        wait_until="domcontentloaded",
-        timeout=60000,
-    )
+    # 跳转前先允许「确定要离开此页面吗」这类原生弹窗放行。
+    #
+    # 2026-08-21 加的，用来解释并切断【失败会连着出现】这个现象：上一个计划如果在
+    # 半路失败（比如复制广告组没点上），页面还停在没发布的草稿里。此时 goto 走人，
+    # 浏览器可能弹 beforeunload 询问框，而 Playwright 在【没有注册 dialog 监听】时
+    # 默认是「dismiss」——对 beforeunload 来说 dismiss 就是「不许走」，于是这次跳转
+    # 被挡住，下一个计划实际是在上一个计划的残页上开始搭的。表现就是接下来那一两个
+    # 计划报各种莫名其妙的错（小游戏下拉读不出来、广告组名称等不到），而单独重跑
+    # 同一个计划却完全正常。
+    # 用完就摘掉监听器，别让它去接后面无关的弹窗。
+    def _accept(d):
+        try:
+            d.accept()
+        except Exception:
+            pass
+
+    page.on("dialog", _accept)
+    try:
+        page.goto(
+            f"https://ads.tiktok.com/i18n/dashboard?aadvid={advertiser_id}",
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
+    finally:
+        try:
+            page.remove_listener("dialog", _accept)
+        except Exception:
+            pass
     create_btn = page.get_by_role("button", name="创建广告")
     create_btn.wait_for(state="visible", timeout=30000)
     page.wait_for_timeout(500)

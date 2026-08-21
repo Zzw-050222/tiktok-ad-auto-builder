@@ -842,14 +842,14 @@ def commit_input(page, el):
     一直是对的，但组件里是空的，所以发布时平台报缺少 URL。加了验证反而给了
     假的安全感——回读只能证明「写进去了」，不能证明「被接住了」。
 
-    用 Tab 键失焦而不是去点某个坐标：效果和点空白处一样，但不会误点到别的控件
-    （尤其是左侧列表）上。再补一次显式的 change + blur 事件兜底。
+    2026-08-21 去掉了原来那一下 Tab 键。
+    Tab 会把焦点移到【下一个不知道是什么的控件】上，而那个控件可能展开一层浮层，
+    正好盖住左侧广告组列表——「每组素材不同」这条路填完 URL 紧接着就要去 hover
+    左侧那一行点复制图标，使用者实测「开着这个功能容易点不到复制按钮」，时间点
+    完全对得上。而且 Tab 本来就是我自己想出来的写法，不是使用者要求的操作。
+    现在只派发 input/change 事件并调 blur()——一样能让组件收下值，但焦点不会
+    跑到别的控件上去。
     """
-    try:
-        page.keyboard.press("Tab")
-    except Exception:
-        pass
-    page.wait_for_timeout(500)
     try:
         el.evaluate("""e => {
           e.dispatchEvent(new Event('input', {bubbles: true}));
@@ -858,7 +858,7 @@ def commit_input(page, el):
         }""")
     except Exception:
         pass
-    page.wait_for_timeout(400)
+    page.wait_for_timeout(600)
 
 
 def fill_and_verify(page, locator, value, what):

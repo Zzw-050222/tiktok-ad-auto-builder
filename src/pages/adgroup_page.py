@@ -41,29 +41,6 @@ def fill_adgroup_budget_if_present(page, daily_budget):
     return True
 
 
-# 把小游戏下拉【列表自己】往下滚一段。
-#
-# 2026-08-20 实测（探针 src/dev_probe_mini_scroll.py + src/dev_probe_mini_list.py，
-# 拿一个真实广告主跑出来的）得到的事实，很重要，别再按猜的改：
-#
-#   * 这个下拉【没有独立的滚动容器】。整个文档里唯一能滚的是表单面板
-#     creation-right-pane-scroller（oy=auto, sh=2269, ch=930）。
-#   * 51 个小游戏【一次性全在 DOM 里】，y 坐标一直排到 3510（视口才 1000 高），
-#     也就是说它们只是在视口外，不是没加载。
-#   * 逐个试滚文档里每一个可滚动元素，「ID: xxx」行数【一个都不会变多】——
-#     压根不存在「滚动加载更多」这回事。
-#
-# 而 target_match 是按 locator.count() 判断的、跟可见性无关，所以【只要那个 ID 在
-# 列表里，第一次就能找到，根本不需要滚动】。反过来说：找不到就是真的没有。
-#
-# 那为什么之前报「已经把列表滚到底」？因为沿祖先链往上找第一个可滚动元素，找到的是
-# 上面那个表单面板——滚它对列表毫无影响，而它很快就到底了，于是报「到底了」。
-# 使用者在旁边看到的就是「根本没有滚动」（列表没动，动的是整个表单）。
-#
-# 所以滚动这段【只作为兜底保留】：万一别的账号的下拉确实是懒加载的，滚一滚还能救；
-# 但绝不能再为它耗上几分钟。判据改成「连续几轮行数不再变多就收工」。
-
-
 # 从下拉里把所有「名字 + ID」抠出来。找不到目标时用它生成【有用的】报错。
 _MINI_LIST_JS = """
 () => {
@@ -100,110 +77,6 @@ def _mini_list_snapshot(page):
         return [(o["id"], o["text"]) for o in page.evaluate(_MINI_LIST_JS)]
     except Exception:
         return []
-_SCROLL_DROPDOWN_JS = """
-(el, step) => {
-  const chain = [];
-  let n = el;
-  while (n && n !== document.body && n !== document.documentElement) {
-    const s = getComputedStyle(n);
-    const oy = s.overflowY;
-    const scrollable = (oy === 'auto' || oy === 'scroll' || oy === 'overlay');
-    const cls = (n.className && n.className.toString ? n.className.toString() : '').slice(0, 40);
-    if (scrollable && n.scrollHeight > n.clientHeight + 4) {
-      const before = n.scrollTop;
-      n.scrollTop = Math.min(before + step, n.scrollHeight);
-      n.dispatchEvent(new Event('scroll', {bubbles: true}));
-      return {found: true, tag: n.tagName.toLowerCase(), cls: cls,
-              before: Math.round(before), after: Math.round(n.scrollTop),
-              scrollHeight: Math.round(n.scrollHeight),
-              clientHeight: Math.round(n.clientHeight),
-              atBottom: (n.scrollTop + n.clientHeight + 4 >= n.scrollHeight)};
-    }
-    chain.push(`${n.tagName.toLowerCase()}.${cls} oy=${oy} sh=${n.scrollHeight} ch=${n.clientHeight}`);
-    n = n.parentElement;
-  }
-  return {found: false, chain: chain.slice(0, 10)};
-}
-"""
-
-_ID_ROW_SELECTOR = "text=/ID[:：]/"
-
-
-def _dropdown_row_count(page):
-    try:
-        return page.locator(_ID_ROW_SELECTOR).count()
-    except Exception:
-        return 0
-
-
-def _first_visible_id_row(page, limit=40):
-    """下拉里第一个【可见】的「ID: xxx」行，用来当滚动容器的锚点。
-
-    必须挑可见的：这个后台大量存在同文本的隐藏副本，锚在隐藏元素上
-    evaluate 出来的祖先链不是我们要滚的那个容器。
-    """
-    loc = page.locator(_ID_ROW_SELECTOR)
-    try:
-        n = loc.count()
-    except Exception:
-        return None
-    for i in range(min(n, limit)):
-        try:
-            if loc.nth(i).is_visible():
-                return loc.nth(i)
-        except Exception:
-            continue
-    return None
-
-
-def _scroll_dropdown_for_mini(page, target_match, tt_mini_id, max_rounds=24):
-    """兜底：万一某个账号的下拉是懒加载的，滚一滚看会不会冒出更多行。
-
-    实测（见上面那段）这个账号根本不需要滚——51 个游戏一次性全在 DOM 里。所以这里
-    的唯一判据就是【滚了之后「ID: xxx」行数有没有变多】：连续 6 轮不变多就收工，
-    别再为一件没用的事耗时间（上一版会滚 200 段、白耗两分钟，还误报「已滚到底」）。
-    """
-    step = 400
-    no_growth = 0
-    prev_count = _dropdown_row_count(page)
-    no_anchor_rounds = 0
-
-    for r in range(max_rounds):
-        match = target_match()
-        if match:
-            if r:
-                print(f"          [小游戏] 滚了 {r} 段之后找到 ID {tt_mini_id}", flush=True)
-            return match
-
-        anchor = _first_visible_id_row(page)
-        if anchor is None:
-            no_anchor_rounds += 1
-            if no_anchor_rounds > 10:
-                print("          [小游戏] 下拉里一直看不到任何「ID: xxx」行，"
-                      "多半是下拉没展开", flush=True)
-                return None
-            page.wait_for_timeout(500)
-            continue
-        no_anchor_rounds = 0
-
-        try:
-            anchor.evaluate(_SCROLL_DROPDOWN_JS, step)
-        except Exception:
-            pass
-        page.wait_for_timeout(600)
-
-        cur_count = _dropdown_row_count(page)
-        if cur_count > prev_count:
-            no_growth = 0
-            print(f"          [小游戏] 滚动后新增了行：{prev_count} -> {cur_count}",
-                  flush=True)
-        else:
-            no_growth += 1
-            if no_growth >= 6:
-                return None
-        prev_count = cur_count
-
-    return None
 
 
 def _mini_not_found_message(page, mini_game_name, tt_mini_id):
@@ -306,7 +179,50 @@ def select_mini_game(page, mini_game_name: str, tt_mini_id: str):
     match = wait_until(page, target_match, timeout_seconds=15)
 
     if not match:
-        match = _scroll_dropdown_for_mini(page, target_match, tt_mini_id)
+        # No-search accounts: scroll the list to bring more rows into view.
+        # Anchor the mouse on an ACTUAL VISIBLE row's position (never a
+        # hardcoded page coordinate) before wheeling - confirmed live that a
+        # hardcoded coordinate can miss the popup entirely and scroll the
+        # whole underlying page instead, closing the picker.
+        #
+        # 2026-08-21：这段是【原封不动搬回来的原始实现】。
+        # 8-20 我把它换成了「找可滚动祖先直接设 scrollTop」，理由是探针显示
+        # mouse.wheel 没能滚动列表。但使用者的实测结论更有分量：
+        # 关掉「每组素材不同」这个新功能，用原来这段代码搭建【从来不出这个问题】；
+        # 开着新功能才出。也就是说我一次改了两个变量（操作代码 + 操作顺序），
+        # 而只有顺序是使用者要求改的。所以操作代码退回原样，只保留顺序的改动——
+        # 这样下次再出问题就只剩一个变量可查。
+        # 探针那次没找到 Brain Loop，而使用者的截图证明它确实在列表里，说明
+        # 探针当时读到的列表本身就不完整（多半是前一个计划失败后页面没干净），
+        # 我不该拿那次的结论去改这段一直好用的代码。
+        stable_rounds = 0
+        prev_signature = None
+        for _ in range(45):
+            match = target_match()
+            if match:
+                break
+
+            anchor = page.locator("text=/ID[:：]/").first
+            if anchor.count() == 0:
+                break
+            box = anchor.bounding_box()
+            if not box:
+                break
+            page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+            page.mouse.wheel(0, 350)
+            page.wait_for_timeout(700)
+
+            # the visible set of "ID: xxx" rows not changing for several
+            # rounds in a row means we've hit the true end of the list (or of
+            # whatever's been lazy-loaded so far) - stop instead of spinning.
+            signature = tuple(page.locator("text=/ID[:：]/").all_inner_texts())
+            if signature == prev_signature:
+                stable_rounds += 1
+                if stable_rounds >= 6:
+                    break
+            else:
+                stable_rounds = 0
+            prev_signature = signature
 
     if not match:
         raise ValueError(_mini_not_found_message(page, mini_game_name, tt_mini_id))

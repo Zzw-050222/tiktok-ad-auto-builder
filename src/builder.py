@@ -286,6 +286,14 @@ def _build_row_unique_creatives(
         warnings.append(f"[{rec['Ad Group Name']}] {issue}")
 
     # ② 再复制 —— 此时素材还是空的，副本只继承文案/URL
+    #
+    # 复制之前先静置几秒。这不是凭空加的等待：原来那条路走到复制这一步时，前面
+    # 刚经历了几分钟的选素材过程（搜索、滚动、逐个勾选、保存），页面早就完全安定了；
+    # 新顺序把复制紧挨在「填完 URL」后面，页面可能还在跑自动保存/校验，左侧那一行
+    # 正在重渲染，于是 hover 上去点复制图标点不到——使用者实测「开着这个功能容易
+    # 出现点不到复制按钮」，就是这个时间点。
+    # 复制用的还是原来那个 duplicate_ad_group_n_times，一个字没改。
+    page.wait_for_timeout(3000)
     print(f"      [每组素材不同] ② 复制 {extra_copies} 个广告组"
           f"（文案/URL 会被继承，素材是空的），共 {total_ads} 个广告要挑素材", flush=True)
     duplicate_ad_group_n_times(page, rec["Ad Group Name"], extra_copies)
