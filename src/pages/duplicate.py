@@ -47,11 +47,18 @@ def _click_copy_icon(page, row, icon):
 
     顺序很重要——必须 hover 之后再读 bounding_box()，因为在广告层上这些按钮
     hover 之前是 0x0（见 _find_copy_icon）。
+
+    每次 hover 之前先看弹窗是不是已经开了，开了就立刻回来。
+    2026-08-21 使用者实测：「点到了 + 号但是到了复制窗口居然一直在滑滚轮」——
+    就是这里造成的：弹窗其实已经打开，但外层判定没认出来又来重试，而 hover()
+    自带 scroll-into-view，4 轮重试 × 每轮 3 次 hover = 一直在滚。
     """
     from src.pages.common import robust_click
 
     box = None
     for _ in range(3):
+        if _modal_open(page):
+            return "（弹窗已开，没再点）"
         try:
             row.hover(timeout=8000)
         except Exception:
@@ -65,12 +72,57 @@ def _click_copy_icon(page, row, icon):
             break
         box = None
 
+    if _modal_open(page):
+        return "（弹窗已开，没再点）"
     if box:
         page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
         return "鼠标点坐标"
     # 还是 0x0：直接让 robust_click 走到 JS 派发那一步（它对零尺寸元素也有效）
     robust_click(page, icon, timeout=6000)
     return "robust_click(JS派发)"
+
+
+def _wait_modal(page, timeout_seconds=10):
+    """等「副本数量」弹窗出现。轮询而不是固定 sleep。
+
+    原来是点完固定等 1.5 秒再判一次，等不到就当没开、再点一遍。而这个后台经常
+    卡到几秒，于是「其实开了、只是慢」被当成「没开」，然后又点又滚（见
+    _click_copy_icon 的说明）。改成轮询，开了立刻走。
+    """
+    from src.pages.common import wait_until
+
+    return bool(wait_until(page, lambda: _modal_open(page) or None,
+                           timeout_seconds=timeout_seconds))
+
+
+def _dup_failure_detail(page):
+    """复制弹窗死活不出现时，把现场信息带进报错里，免得下次还要靠猜。"""
+    btns, dlgs = [], []
+    try:
+        b = page.get_by_role("button")
+        for i in range(min(b.count(), 20)):
+            try:
+                if not b.nth(i).is_visible():
+                    continue
+                t = (b.nth(i).inner_text() or "").replace("\n", " ").strip()
+                if t:
+                    btns.append(t[:20])
+            except Exception:
+                continue
+    except Exception:
+        pass
+    try:
+        d = page.locator('[role="dialog"]:visible, [class*="modal"]:visible')
+        for i in range(min(d.count(), 3)):
+            try:
+                t = (d.nth(i).inner_text() or "").replace("\n", " ").strip()
+                if t:
+                    dlgs.append(t[:160])
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return f"当前可见按钮: {btns}；弹层文字: {dlgs or '（没有可见弹层）'}"
 
 
 def _find_copy_count_input(page):
@@ -130,6 +182,11 @@ def _open_duplicate_modal(page, ad_group_name: str, count: int):
     row.first.scroll_into_view_if_needed(timeout=10000)
 
     for attempt in range(4):
+        # 每轮开头先看弹窗是不是已经开着。开着就别再碰那一行——再 hover 就会又滚一遍
+        # （使用者实测「到了复制窗口居然一直在滑滚轮」就是这么来的）。
+        if _modal_open(page):
+            break
+
         try:
             row.first.hover(timeout=10000)
         except Exception:
@@ -142,14 +199,13 @@ def _open_duplicate_modal(page, ad_group_name: str, count: int):
                 raise ValueError(
                     f"广告组 {ad_group_name!r} 那一行上找不到复制图标"
                     f"（试过 {list(_COPY_ICON_SELECTORS)}）。"
-                    f"当前地址: {page.url[:120]}"
+                    f"{_dup_failure_detail(page)}"
                 )
             page.wait_for_timeout(800)
             continue
 
         how = _click_copy_icon(page, row.first, icon)
-        page.wait_for_timeout(1500)
-        if _modal_open(page):
+        if _wait_modal(page):
             if attempt or how != "鼠标点坐标":
                 print(f"          [复制广告组] 第{attempt + 1}次（{how}）打开了"
                       "「副本数量」弹窗", flush=True)
@@ -158,7 +214,7 @@ def _open_duplicate_modal(page, ad_group_name: str, count: int):
         if attempt == 3:
             raise ValueError(
                 "点了 4 次广告组行上的复制图标，「副本数量」弹窗始终没出现。"
-                f"广告组名 {ad_group_name!r}，当前地址: {page.url[:120]}"
+                f"广告组名 {ad_group_name!r}。{_dup_failure_detail(page)}"
             )
         page.wait_for_timeout(800)
 
@@ -231,6 +287,10 @@ def duplicate_ad_n_times(page, count: int):
     # ks-icon-copy-content 这个【元素名】是错的，实际是
     # <ks-icon name="copy-content" class="… KsIconCopyContent">
     for attempt in range(4):
+        # 同广告组那边：弹窗已经开着就立刻停手，别再 hover 那一行（hover 会滚动）
+        if _modal_open(page):
+            break
+
         try:
             row.first.hover(timeout=10000)
         except Exception:
@@ -241,16 +301,22 @@ def duplicate_ad_n_times(page, count: int):
             if attempt == 3:
                 raise ValueError(
                     "广告那一行上找不到复制图标"
-                    f"（试过 {list(_COPY_ICON_SELECTORS)}）"
+                    f"（试过 {list(_COPY_ICON_SELECTORS)}）。{_dup_failure_detail(page)}"
                 )
             page.wait_for_timeout(800)
             continue
-        _click_copy_icon(page, row.first, icon)
-        page.wait_for_timeout(1500)
-        if _modal_open(page):
+        how = _click_copy_icon(page, row.first, icon)
+        if _wait_modal(page):
+            if attempt or how != "鼠标点坐标":
+                print(f"          [复制广告] 第{attempt + 1}次（{how}）打开了"
+                      "「副本数量」弹窗", flush=True)
             break
+        print(f"          [复制广告] 第{attempt + 1}次（{how}）没打开弹窗", flush=True)
         if attempt == 3:
-            raise ValueError("点了 4 次广告行上的复制图标，「副本数量」弹窗始终没出现")
+            raise ValueError(
+                "点了 4 次广告行上的复制图标，「副本数量」弹窗始终没出现。"
+                f"{_dup_failure_detail(page)}"
+            )
         page.wait_for_timeout(800)
 
     # avoid xpath's `following::` axis here - it doesn't cross shadow DOM
