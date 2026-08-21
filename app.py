@@ -267,6 +267,11 @@ def _run_build(xlsx_path, publish, mode, unique_creatives=False):
                     )
                 result["campaign_name"] = campaign_name
                 result["ad_group_count"] = len(rows)
+                # 这条计划来自表格的第几行（表头算第 1 行）。界面上标在计划名前面，
+                # 报错时能直接回表格定位。一个计划占多行时全部列出。
+                result["excel_rows"] = [
+                    r.get("_excel_row") for r in rows if r.get("_excel_row")
+                ]
                 _log_result(mode, publish, campaign_name, result)
 
                 with state_lock:

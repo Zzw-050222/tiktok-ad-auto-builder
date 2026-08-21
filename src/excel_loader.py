@@ -70,7 +70,12 @@ def load_rows(xlsx_path):
     optional_idx = {name: header.index(name) for name in OPTIONAL_COLUMNS if name in header}
 
     records = []
-    for r in rows[1:]:
+    # excel_row 是【表格里真实的行号】（表头是第 1 行，所以第一条数据是第 2 行）。
+    # 用途：网页上的结果列表每条计划前面标出它来自表格第几行，报错时能直接回表格
+    # 定位（使用者要求：「每条广告计划前面标个表格里的序号，我要从表格里面快速
+    # 定位到是哪条计划报错的」）。用真实行号而不是从 0 数的下标，就是为了能对着
+    # Excel 左边那一列直接看。
+    for offset, r in enumerate(rows[1:]):
         if r is None or all(v is None for v in r):
             continue
         record = {name: r[i] for name, i in idx.items()}
@@ -78,6 +83,7 @@ def load_rows(xlsx_path):
             record[name] = r[i]
         if record.get("Ad Group Name Number") in (None, ""):
             record["Ad Group Name Number"] = 0
+        record["_excel_row"] = offset + 2
         records.append(record)
     return records
 

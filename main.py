@@ -9,10 +9,15 @@ from src.excel_loader import group_by_campaign, load_rows
 PUBLISH = True
 
 
-def main(xlsx_path, unique_creatives=False):
+def main(xlsx_path, unique_creatives=False, publish=None):
+    # publish 显式传 False 就只搭草稿。加这个开关是为了能【安全地验证流程】——
+    # 默认 PUBLISH=True 会真的花钱，调试时不能用。
+    if publish is None:
+        publish = PUBLISH
     records = load_rows(xlsx_path)
     groups = group_by_campaign(records)
     print(f"共读取到 {len(records)} 行，分成 {len(groups)} 个计划。")
+    print("发布模式: " + ("【会真的发布并花钱】" if publish else "只搭草稿（--no-publish）"))
     if unique_creatives:
         print("已开启「每个广告组用不同素材」（--unique-creatives）："
               "带 Ad Group Name Number 的行会先复制出空广告组，再沿「继续」逐个挑素材。")
@@ -39,7 +44,7 @@ def main(xlsx_path, unique_creatives=False):
                 str(campaign_name),
                 budget,
                 rows,
-                publish=PUBLISH,
+                publish=publish,
                 creative_usage=creative_usage,
                 unique_creatives=unique_creatives,
             )
@@ -68,6 +73,7 @@ def main(xlsx_path, unique_creatives=False):
 if __name__ == "__main__":
     argv = sys.argv[1:]
     unique = "--unique-creatives" in argv
+    do_publish = False if "--no-publish" in argv else None
     args = [a for a in argv if not a.startswith("--")]
     xlsx = args[0] if args else "examples/sample_campaign_template.xlsx"
-    main(xlsx, unique_creatives=unique)
+    main(xlsx, unique_creatives=unique, publish=do_publish)

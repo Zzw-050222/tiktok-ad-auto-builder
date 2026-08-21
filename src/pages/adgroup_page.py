@@ -41,7 +41,164 @@ def fill_adgroup_budget_if_present(page, daily_budget):
     return True
 
 
+# 小游戏那一行的定位。ID 必须以 mg 开头 —— 这一条是踩出来的，非常重要：
+#
+# 原来用的是 text=/ID[:：]/，它会把【页头的账号信息】也匹配进来。使用者截图里的报错
+# 文案暴露了这一点：前两项是「用户<一串数字>…ID: <一串数字>…用户设置语言中文（简体）」
+# 这种页头文字，根本不是游戏。
+#
+# 而滚动代码原来取的是这个定位器的 .first，于是鼠标被移到【右上角页头那个元素】上，
+# 在那儿滚滚轮当然滚不动下拉列表。使用者说的「根本没有滚动」就是这么来的，
+# 而且这也解释了为什么它一路「滚到底」却一个新游戏都没加载出来。
+#
+# 实测所有小游戏 ID 都以 mg 开头（探针读到的 50 多个、以及使用者截图里的每一个都是），
+# 而页头那些是纯数字的账号 ID。用 mg 前缀正好把两者分开。
+_MINI_ROW_SELECTOR = r"text=/ID[:：]\s*mg/"
+
+
+def _visible_mini_rows(page, limit=80):
+    """下拉里所有【可见】的小游戏行。返回列表（可能为空）。"""
+    loc = page.locator(_MINI_ROW_SELECTOR)
+    out = []
+    try:
+        n = loc.count()
+    except Exception:
+        return out
+    for i in range(min(n, limit)):
+        el = loc.nth(i)
+        try:
+            if el.is_visible():
+                out.append(el)
+        except Exception:
+            continue
+    return out
+
+
+def _mini_row_count(page):
+    try:
+        return page.locator(_MINI_ROW_SELECTOR).count()
+    except Exception:
+        return 0
+
+
+def _ensure_mini_dropdown_open(page, picker, tries=3):
+    """确认小游戏下拉【真的打开了】，没开就再点一次。返回 True/False。
+
+    2026-08-21 实跑发现的（必须记住）：`ks-select` 这个组件【关闭状态下也把所有选项
+    留在 DOM 里】。所以：
+      * page.locator("text=…").count() 数得到 50 行，但一个都不可见 —— 那不是
+        「渲染慢」，那是【下拉是关着的】。日志里「当前 50 个游戏 / 一直看不到任何
+        小游戏行」这对组合就是这么来的。
+      * target_match 是按 count() 判断的、跟可见性无关，所以下拉关着也照样能命中
+        已经在 DOM 里的那 50 个。但列表【只有真正打开并往下滚，才会加载更多】，
+        关着滚是白滚。
+
+    所以滚动之前必须先确认它是开着的。判据用「有没有【可见】的小游戏行」——
+    这也正是本项目记过的教训：在报「没看到 X」之前，先确认下拉真的展开了。
+
+    只在【确认没开】时才补点：click_to_open 的注释里写着，去点一个已经打开的下拉
+    会把它关回去，所以绝不能无条件重点。
+    """
+    from src.pages.common import wait_until
+
+    for attempt in range(tries):
+        opened = wait_until(
+            page,
+            lambda: bool(_visible_mini_rows(page, limit=3)),
+            timeout_seconds=8,
+        )
+        if opened:
+            if attempt:
+                print(f"          [小游戏] 第 {attempt + 1} 次点击后下拉打开了", flush=True)
+            return True
+        if attempt == tries - 1:
+            break
+        print(f"          [小游戏] 下拉没打开（DOM 里有 {_mini_row_count(page)} 行但"
+              "都不可见），再点一次", flush=True)
+        try:
+            picker.first.click(timeout=10000, force=True)
+        except Exception:
+            pass
+        page.wait_for_timeout(1200)
+    return False
+
+
+def _scroll_mini_list(page, target_match, tt_mini_id, max_rounds=200):
+    """把小游戏下拉往下滚，边滚边找目标。滚到底还要多滚几下等它加载更多。
+
+    使用者的说法（2026-08-21）：「你滚到底还会加载更多小游戏的，这个操作跟程序去
+    选择地域选择全部地域的操作很像，就是滚到底多滚一下看一下有没有没刷新出来的」。
+    所以这里照 select_all_available_regions 那套写：滚一下 -> 等一下 -> 比【行数】
+    有没有变多 -> 连续几轮不变多才收工，收工前再多滚几下确认。
+
+    和原来那版的三个实质区别（都是原来滚不动的原因）：
+      ① 鼠标锚点只落在【真的小游戏行】上（ID 以 mg 开头），不会再落到页头的账号信息上
+      ② 锚在【最后一个可见行】上（列表底部），滚轮事件才作用在列表上而不是页面上
+      ③ 判据从「行文本签名不变」换成「行数不再变多」，并且【找不到锚点不再直接
+         break】——原来 anchor.count()==0 或 bounding_box() 为空就 break，等于一次
+         都不滚就放弃
+    """
+    stale = 0
+    prev_count = _mini_row_count(page)
+    no_anchor = 0
+    print(f"          [小游戏] 开始滚动找 ID {tt_mini_id}，当前 {prev_count} 个游戏",
+          flush=True)
+
+    for r in range(max_rounds):
+        match = target_match()
+        if match:
+            print(f"          [小游戏] 第 {r} 次滚动后找到了（列表已加载 "
+                  f"{_mini_row_count(page)} 个）", flush=True)
+            return match
+
+        rows = _visible_mini_rows(page)
+        if not rows:
+            # 不 break：下拉可能还在渲染，给它几次机会
+            no_anchor += 1
+            if no_anchor > 12:
+                print("          [小游戏] 一直看不到任何小游戏行，多半是下拉没展开",
+                      flush=True)
+                return None
+            page.wait_for_timeout(500)
+            continue
+        no_anchor = 0
+
+        # 锚在【最后一个可见行】上：那里是列表底部，滚轮事件才落在列表里
+        anchor = rows[-1]
+        try:
+            box = anchor.bounding_box()
+        except Exception:
+            box = None
+        if box:
+            page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        page.mouse.wheel(0, 300)
+        page.wait_for_timeout(400)
+
+        cur_count = _mini_row_count(page)
+        if cur_count > prev_count:
+            stale = 0
+            print(f"          [小游戏] 滚出更多了：{prev_count} -> {cur_count} 个",
+                  flush=True)
+        else:
+            stale += 1
+            # 「滚到底多滚一下」：不变多也先多滚几轮，别急着收工
+            if stale >= 8:
+                print(f"          [小游戏] 连续 {stale} 轮没有新游戏加载出来，"
+                      f"列表共 {cur_count} 个，到此为止", flush=True)
+                return target_match()
+            if stale % 3 == 0:
+                print(f"          [小游戏] 已滚 {r + 1} 次，共 {cur_count} 个游戏，"
+                      f"再多滚几下看有没有没刷新出来的…", flush=True)
+        prev_count = cur_count
+
+    print(f"          [小游戏] 滚了 {max_rounds} 次仍未找到，列表共 "
+          f"{_mini_row_count(page)} 个", flush=True)
+    return target_match()
+
+
 # 从下拉里把所有「名字 + ID」抠出来。找不到目标时用它生成【有用的】报错。
+# 只收 ID 以 mg 开头的（见 _MINI_ROW_SELECTOR）——原来会把页头的账号信息也收进来，
+# 报错里就出现了「用户<一串数字>…ID: <一串数字>」这种莫名其妙的东西。
 _MINI_LIST_JS = """
 () => {
   const out = [];
@@ -49,7 +206,7 @@ _MINI_LIST_JS = """
     const own = Array.from(el.childNodes)
       .filter(n => n.nodeType === 3)
       .map(n => n.textContent.trim()).join('').trim();
-    const m = own.match(/ID[:：]\\s*(\\S+)$/);
+    const m = own.match(/ID[:：]\\s*(mg\\w+)$/);
     if (!m) continue;
     let row = el, text = own;
     for (let k = 0; k < 5 && row; k++) {
@@ -179,50 +336,12 @@ def select_mini_game(page, mini_game_name: str, tt_mini_id: str):
     match = wait_until(page, target_match, timeout_seconds=15)
 
     if not match:
-        # No-search accounts: scroll the list to bring more rows into view.
-        # Anchor the mouse on an ACTUAL VISIBLE row's position (never a
-        # hardcoded page coordinate) before wheeling - confirmed live that a
-        # hardcoded coordinate can miss the popup entirely and scroll the
-        # whole underlying page instead, closing the picker.
-        #
-        # 2026-08-21：这段是【原封不动搬回来的原始实现】。
-        # 8-20 我把它换成了「找可滚动祖先直接设 scrollTop」，理由是探针显示
-        # mouse.wheel 没能滚动列表。但使用者的实测结论更有分量：
-        # 关掉「每组素材不同」这个新功能，用原来这段代码搭建【从来不出这个问题】；
-        # 开着新功能才出。也就是说我一次改了两个变量（操作代码 + 操作顺序），
-        # 而只有顺序是使用者要求改的。所以操作代码退回原样，只保留顺序的改动——
-        # 这样下次再出问题就只剩一个变量可查。
-        # 探针那次没找到 Brain Loop，而使用者的截图证明它确实在列表里，说明
-        # 探针当时读到的列表本身就不完整（多半是前一个计划失败后页面没干净），
-        # 我不该拿那次的结论去改这段一直好用的代码。
-        stable_rounds = 0
-        prev_signature = None
-        for _ in range(45):
-            match = target_match()
-            if match:
-                break
-
-            anchor = page.locator("text=/ID[:：]/").first
-            if anchor.count() == 0:
-                break
-            box = anchor.bounding_box()
-            if not box:
-                break
-            page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-            page.mouse.wheel(0, 350)
-            page.wait_for_timeout(700)
-
-            # the visible set of "ID: xxx" rows not changing for several
-            # rounds in a row means we've hit the true end of the list (or of
-            # whatever's been lazy-loaded so far) - stop instead of spinning.
-            signature = tuple(page.locator("text=/ID[:：]/").all_inner_texts())
-            if signature == prev_signature:
-                stable_rounds += 1
-                if stable_rounds >= 6:
-                    break
-            else:
-                stable_rounds = 0
-            prev_signature = signature
+        # 滚之前先确认下拉真的开着——关着滚是白滚（见 _ensure_mini_dropdown_open）
+        if _ensure_mini_dropdown_open(page, picker):
+            match = _scroll_mini_list(page, target_match, tt_mini_id)
+        else:
+            print("          [小游戏] 试了几次都没能把下拉打开，没法往下滚找",
+                  flush=True)
 
     if not match:
         raise ValueError(_mini_not_found_message(page, mini_game_name, tt_mini_id))
