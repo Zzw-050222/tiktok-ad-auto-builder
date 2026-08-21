@@ -20,45 +20,57 @@ _COPY_ICON_SELECTORS = (
 
 
 def _find_copy_icon(scope):
-    """在给定的行里找复制图标，返回第一个【有尺寸】的。找不到返回 None。"""
+    """在给定的行里找复制图标，返回第一个【存在】的（不要求有尺寸）。
+
+    2026-08-21 实测：在【广告层】上，那一行的操作按钮是【零尺寸】的——
+        · <ks-button …class="sidebar-item-node__operate-btn-…">  rect=[0,0,0,0]
+        · <ks-icon name="copy-content" class="… KsIconCopyContent">  rect=[0,0,0,0]
+        · <ks-dropdown-menu data-testid="ttam-sidebar-more-actions__moreIcon"> rect=[0,0,0,0]
+    只有鼠标悬到那一行上才会撑开。而 Playwright 对零尺寸元素的 bounding_box()
+    返回 None，所以上一版「要求 bounding_box() 有值」就把它判成了「找不到复制图标」。
+    （在广告组页面上它是有尺寸的，所以之前那个探针能找到——两个页面不一样。）
+
+    这里只要元素【在 DOM 里】就返回，尺寸留给 _click_copy_icon 在 hover 之后再取。
+    """
     for sel in _COPY_ICON_SELECTORS:
         loc = scope.locator(sel)
         try:
-            n = loc.count()
+            if loc.count() > 0:
+                return loc.first
         except Exception:
             continue
-        for i in range(min(n, 6)):
-            el = loc.nth(i)
-            try:
-                if el.bounding_box():
-                    return el
-            except Exception:
-                continue
     return None
 
 
 def _click_copy_icon(page, row, icon):
-    """点复制图标。用【真实鼠标点坐标】——探针里就是这么点开的。
+    """点复制图标：先 hover 那一行把按钮撑开，再按坐标点；拿不到坐标就退回 robust_click。
 
-    先 hover 那一行（图标是 hover 才显现的），再按图标中心坐标点。
-    坐标拿不到时退回 robust_click。
+    顺序很重要——必须 hover 之后再读 bounding_box()，因为在广告层上这些按钮
+    hover 之前是 0x0（见 _find_copy_icon）。
     """
     from src.pages.common import robust_click
 
-    try:
-        row.hover(timeout=8000)
-    except Exception:
-        pass
-    page.wait_for_timeout(400)
     box = None
-    try:
-        box = icon.bounding_box()
-    except Exception:
-        pass
+    for _ in range(3):
+        try:
+            row.hover(timeout=8000)
+        except Exception:
+            pass
+        page.wait_for_timeout(500)
+        try:
+            box = icon.bounding_box()
+        except Exception:
+            box = None
+        if box and box.get("width") and box.get("height"):
+            break
+        box = None
+
     if box:
         page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-    else:
-        robust_click(page, icon, timeout=6000)
+        return "鼠标点坐标"
+    # 还是 0x0：直接让 robust_click 走到 JS 派发那一步（它对零尺寸元素也有效）
+    robust_click(page, icon, timeout=6000)
+    return "robust_click(JS派发)"
 
 
 def _find_copy_count_input(page):
@@ -135,10 +147,14 @@ def _open_duplicate_modal(page, ad_group_name: str, count: int):
             page.wait_for_timeout(800)
             continue
 
-        _click_copy_icon(page, row.first, icon)
+        how = _click_copy_icon(page, row.first, icon)
         page.wait_for_timeout(1500)
         if _modal_open(page):
+            if attempt or how != "鼠标点坐标":
+                print(f"          [复制广告组] 第{attempt + 1}次（{how}）打开了"
+                      "「副本数量」弹窗", flush=True)
             break
+        print(f"          [复制广告组] 第{attempt + 1}次（{how}）没打开弹窗", flush=True)
         if attempt == 3:
             raise ValueError(
                 "点了 4 次广告组行上的复制图标，「副本数量」弹窗始终没出现。"

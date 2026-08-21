@@ -123,22 +123,65 @@ def _ensure_mini_dropdown_open(page, picker, tries=3):
     return False
 
 
+def _click_mini_refresh(page):
+    """点下拉底部的「刷新」按钮（使用者截图里下拉底部有「刷新」和「新增」）。
+
+    这个按钮就是用来重新拉小游戏列表的。实测同一个账号同一个下拉，有时一打开就有
+    64 个游戏、有时只有 50 个，而目标排在第 54 位——列表加载多少本身是不稳定的，
+    所以「滚不出新东西」时值得按一次刷新。
+    找不到就返回 False，不当错误。
+    """
+    for name in ("刷新", "Refresh"):
+        try:
+            btn = page.get_by_role("button", name=name, exact=True)
+            for i in range(min(btn.count(), 4)):
+                if btn.nth(i).is_visible():
+                    btn.nth(i).click(timeout=5000)
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def _mini_scroll_evidence(page):
+    """滚动的【客观证据】：第一个可见小游戏行的文字 + y 坐标。
+
+    加这个是因为「有没有真的在滚」不能靠嘴说。列表真的在滚时，视口里最上面那一行
+    会换成别的游戏、y 坐标也会变；如果两个值一轮轮都不动，那就是压根没滚动
+    （之前鼠标锚错到页头上时就是这样）。日志里直接打出来，看一眼就知道。
+    """
+    rows = _visible_mini_rows(page, limit=3)
+    if not rows:
+        return "（没有可见行）"
+    try:
+        box = rows[0].bounding_box()
+        txt = (rows[0].inner_text() or "").replace("\n", " ").strip()[:34]
+        return f"顶上第一行={txt!r} y={round(box['y']) if box else '?'}"
+    except Exception:
+        return "（读不出）"
+
+
 def _scroll_mini_list(page, target_match, tt_mini_id, max_rounds=200):
-    """把小游戏下拉往下滚，边滚边找目标。滚到底还要多滚几下等它加载更多。
+    """往下翻小游戏下拉，边翻边找目标；翻不出新的了再按一次「刷新」。
 
-    使用者的说法（2026-08-21）：「你滚到底还会加载更多小游戏的，这个操作跟程序去
-    选择地域选择全部地域的操作很像，就是滚到底多滚一下看一下有没有没刷新出来的」。
-    所以这里照 select_all_available_regions 那套写：滚一下 -> 等一下 -> 比【行数】
-    有没有变多 -> 连续几轮不变多才收工，收工前再多滚几下确认。
+    使用者的两条实测指示（2026-08-21，一前一后，第二条纠正了第一条）：
+      ① 「滚到底还会加载更多小游戏，跟选择全部地域的操作很像，滚到底多滚一下
+         看有没有没刷新出来的」
+      ② 「滚轮一直在滚主页面，根本没有看到你滚那个列表。列表显示不完整你可以
+         往下滚一点页面再去点」
 
-    和原来那版的三个实质区别（都是原来滚不动的原因）：
-      ① 鼠标锚点只落在【真的小游戏行】上（ID 以 mg 开头），不会再落到页头的账号信息上
-      ② 锚在【最后一个可见行】上（列表底部），滚轮事件才作用在列表上而不是页面上
-      ③ 判据从「行文本签名不变」换成「行数不再变多」，并且【找不到锚点不再直接
-         break】——原来 anchor.count()==0 或 bounding_box() 为空就 break，等于一次
-         都不滚就放弃
+    所以做法是：
+      * 【不用 page.mouse.wheel】。打出滚动证据后确认：这个下拉没有自己的滚动区，
+        它是一条很长的浮层、被窗口下边缘裁掉，滚轮滚的一直是主页面。
+      * 改成把 DOM 里最后一行 scroll_into_view_if_needed —— 浏览器会自己去滚该滚的
+        那个容器，不用猜；这同时也是触发「进视口才加载」那类懒加载的正确姿势。
+      * 判据是【行数有没有变多】（不是行文本签名），连续 25 轮不变多才收工；
+        第 10 轮时按一次下拉底部的「刷新」再给一次机会。
+      * 行定位只认 ID 以 mg 开头的真游戏行，不会再命中页头的账号信息
+        （见 _MINI_ROW_SELECTOR）。
     """
     stale = 0
+    refreshed = False
     prev_count = _mini_row_count(page)
     no_anchor = 0
     print(f"          [小游戏] 开始滚动找 ID {tt_mini_id}，当前 {prev_count} 个游戏",
@@ -163,32 +206,58 @@ def _scroll_mini_list(page, target_match, tt_mini_id, max_rounds=200):
             continue
         no_anchor = 0
 
-        # 锚在【最后一个可见行】上：那里是列表底部，滚轮事件才落在列表里
-        anchor = rows[-1]
+        # 【不再用 page.mouse.wheel】。2026-08-21 打出滚动证据后看得很清楚：
+        #     第1~12滚  顶上第一行永远是同一个游戏、y=668 一动不动
+        #     第13~16滚 y 变成 -281/26/232/-371 —— 动的是【整个页面】
+        # 使用者在旁边看着，说的就是「滚轮一直在滚主页面，根本没有看到你滚那个列表」。
+        # 原因是这个下拉【没有自己的滚动区】：它是一个很长的浮层，被窗口下边缘裁掉，
+        # 所以「滚列表」这件事根本不存在。使用者给的办法是「列表显示不完整你可以往下
+        # 滚一点页面再去点」。
+        #
+        # 所以改成把 DOM 里【最后一行】滚进视口 —— scroll_into_view_if_needed 会自己
+        # 去滚该滚的那个容器（页面、表单面板、浮层，都行），不用我猜是哪一个。
+        # 顺带这也是触发「视口内才加载」那类懒加载的正确姿势。
+        all_rows = page.locator(_MINI_ROW_SELECTOR)
         try:
-            box = anchor.bounding_box()
+            n = all_rows.count()
+            if n:
+                all_rows.nth(n - 1).scroll_into_view_if_needed(timeout=5000)
         except Exception:
-            box = None
-        if box:
-            page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-        page.mouse.wheel(0, 300)
-        page.wait_for_timeout(400)
+            pass
+        page.wait_for_timeout(700 if stale < 3 else 1200)
 
         cur_count = _mini_row_count(page)
+        # 每轮都打出滚动证据：顶上那一行的名字和 y 坐标。它们在变 = 真的在滚。
+        print(f"          [小游戏] 第{r + 1}滚  共{cur_count}个  "
+              f"{_mini_scroll_evidence(page)}", flush=True)
         if cur_count > prev_count:
             stale = 0
-            print(f"          [小游戏] 滚出更多了：{prev_count} -> {cur_count} 个",
+            print(f"          [小游戏] ↑ 滚出更多了：{prev_count} -> {cur_count} 个",
                   flush=True)
         else:
             stale += 1
-            # 「滚到底多滚一下」：不变多也先多滚几轮，别急着收工
-            if stale >= 8:
+            # 「滚到底多滚一下」：不变多也别急着收工。
+            # 8 轮 -> 25 轮。8 轮太紧了：实测同一个账号，一次滚到 64 个把目标找出来了，
+            # 另一次 8 轮没新东西就收工、停在 50 个然后报「这个账号没有这个游戏」——
+            # 而那个游戏其实排在第 54 位。差别只是懒加载那一下有没有赶上。
+            # 使用者的原话就是「滚到底多滚一下看一下有没有没刷新出来的」。
+            # 25 轮 × 0.9 秒 ≈ 22 秒的额外确认，比误报「找不到」划算得多。
+            # 连续几轮没新东西了，试一次下拉底部那个「刷新」按钮——它就是用来
+            # 重新拉这个列表的（使用者截图里下拉底部有「刷新」和「新增」两个按钮）。
+            # 只按一次，按完再给它几轮；按多了会把列表重置回顶部。
+            if stale == 10 and not refreshed:
+                refreshed = True
+                if _click_mini_refresh(page):
+                    print("          [小游戏] 点了下拉底部的「刷新」，重新等列表",
+                          flush=True)
+                    page.wait_for_timeout(3000)
+                    stale = 0
+                    prev_count = _mini_row_count(page)
+                    continue
+            if stale >= 25:
                 print(f"          [小游戏] 连续 {stale} 轮没有新游戏加载出来，"
                       f"列表共 {cur_count} 个，到此为止", flush=True)
                 return target_match()
-            if stale % 3 == 0:
-                print(f"          [小游戏] 已滚 {r + 1} 次，共 {cur_count} 个游戏，"
-                      f"再多滚几下看有没有没刷新出来的…", flush=True)
         prev_count = cur_count
 
     print(f"          [小游戏] 滚了 {max_rounds} 次仍未找到，列表共 "
