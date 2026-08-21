@@ -26,6 +26,10 @@ src/dev_test_*.py
 src/dev_set_language.py
 src/dev_probe.py
 
+# 打包给别人用的整包 zip —— 由 ./打包最新版.sh 生成，推到【私有】仓库，
+# 不进这个公开仓库（内容就是这个仓库本身，进来只会让仓库无谓变大）
+auto-builder-最新版.zip
+
 # 测试用的搭建表 —— 里面有真实广告主 ID，不能进公开仓库
 test-table/
 
