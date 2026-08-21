@@ -9,6 +9,7 @@
 """
 
 import re
+import time
 
 # 商品库下拉收起态的占位文字
 CATALOG_PLACEHOLDER = "请选择商品库"
@@ -55,109 +56,194 @@ def _is_selected(el):
 
 
 
-def _scroll_into_comfortable_view(page, locator, tries=14, label=""):
-    """真的把元素滚进视口中部；滚不动就换 JS 滚它最近的可滚动祖先。
+def _viewport_h(page):
+    """视口【真实】高度。
 
-    踩过的两个坑，都会表现为【页面根本不动】：
-      1) bounding_box() 对 shadow DOM 里的 <slot> 返回 None。slot 自身不渲染，
-         只有被它分配的节点才有盒子。拿不到坐标就 return，滚动一次都没发生——
-         使用者在旁边看着浏览器说「每次选完剧集都没看到页面滚动」，就是这个。
-         所以这里拿不到盒子时，往上找有真实盒子的祖先。
-      2) _first_visible 只看 getBoundingClientRect 非零，【屏幕外的元素照样算可见】，
-         于是「找不到才滚」的写法永远不触发滚动。调用方必须无条件调用本函数。
-
-    另外 mouse.wheel 是滚【鼠标底下】那个容器，所以先把鼠标移到表单区域中间；
-    真滚不动（内层容器吃掉滚动）时退回直接设最近可滚动祖先的 scrollTop。
+    必须问浏览器要 window.innerHeight，不能用 page.viewport_size ——
+    后者返回的是【启动时要求的】值（drama/main.py 里写的 1600x1000），
+    而 headless=False 时窗口能有多高由屏幕说话：使用者的屏幕是 1470x956（CSS 像素），
+    减掉标签栏/地址栏/书签栏和程序坞，真实视口只有 700 上下。
+    拿 1000 去算「舒适区」，bottom_safe = 1000-230 = 770 已经在屏幕外了，
+    于是一个根本看不见的元素也会被判成「到位」。
     """
     try:
-        vh = page.viewport_size["height"]
+        h = page.evaluate("() => window.innerHeight")
+        if isinstance(h, (int, float)) and h > 200:
+            return int(h)
     except Exception:
-        vh = 1000
-    top_safe, bottom_safe = 170, vh - 230      # 避开顶部导航和底部固定操作栏
-    target_y = (top_safe + bottom_safe) // 2
+        pass
+    try:
+        return page.viewport_size["height"]
+    except Exception:
+        return 1000
 
-    def rect():
-        """取真实盒子：自己没有（slot）就往上找祖先。"""
+
+# 量一个元素在视口里的位置：{y, h, tag}。量不到返回 null。
+#
+# 自己没有盒子时往上找祖先（shadow DOM 里的 <slot> 就没有，slot 自身不渲染），
+# 但要求那个祖先【不比视口高】。这一条是【防御】，不是已确诊的病因：
+# 只要求「盒子非零」的话，理论上可能一路走到几千像素高的表单容器上，
+# 那时候「把它的中心滚到视口中间」等于滚到表单中段，目标反而被滚出屏幕。
+# 我用本地 fixture 试过复现这一幕（shadow DOM + 3200px 容器 + 吸顶吸底），
+# 复现【不出来】——占位文字那个 span 自己就有盒子，老写法也是一次到位。
+# 所以这里如实记一笔：这条限制加着没坏处，但它不是「滚轮上下滑十几秒」的答案。
+_MEASURE_JS = """
+(el, vh) => {
+  let n = el;
+  for (let k = 0; k < 8 && n; k++) {
+    const r = n.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0 && r.height <= vh) {
+      return {y: r.y, h: r.height, tag: (n.tagName || '').toLowerCase()};
+    }
+    n = n.parentElement;      // slot 之类自身没有盒子，往上找
+  }
+  return null;
+}
+"""
+
+# 同样的「找一个大小合适的盒子」逻辑，找到就让浏览器自己滚过去。
+#
+# behavior:'instant' 是特意写的：页面若设了 CSS scroll-behavior: smooth，
+# scrollIntoView 会做动画，而调用方只等 350ms，量到的就是【动画中途】的位置，
+# 于是修正量算错、下一轮再修正——这是滚轮来回滑的一种可能来源。
+# 写死 instant 就不用赌页面的 CSS。
+_SCROLL_CENTER_JS = """
+(el, vh) => {
+  let n = el;
+  for (let k = 0; k < 8 && n; k++) {
+    const r = n.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0 && r.height <= vh) {
+      n.scrollIntoView({block: 'center', inline: 'nearest', behavior: 'instant'});
+      return true;
+    }
+    n = n.parentElement;
+  }
+  return false;
+}
+"""
+
+# 补位移：滚最近那个可滚动祖先。
+#
+# 两点故意的写法：
+#   * 不用 mouse.wheel —— 滚轮滚的是【鼠标底下那个容器】，鼠标停在哪、哪一层把
+#     滚动吃掉了都不确定；老写法为此还得先 mouse.move(800,500) 赌一把。
+#   * 用 scrollTo({behavior:'instant'}) 而不是 scrollTop += dy —— 页面设了
+#     scroll-behavior: smooth 时，直接改 scrollTop 在 Chrome 里也会走动画。
+_SCROLL_BY_JS = """
+(el, dy) => {
+  let n = el;
+  while (n) {
+    const st = getComputedStyle(n);
+    if (n.scrollHeight > n.clientHeight + 4 && /auto|scroll/.test(st.overflowY)) {
+      n.scrollTo({top: n.scrollTop + dy, behavior: 'instant'});
+      return;
+    }
+    n = n.parentElement;
+  }
+  window.scrollTo({top: window.scrollY + dy, behavior: 'instant'});
+}
+"""
+
+
+def _on_screen(page, locator):
+    """元素现在是不是【真的在视口里】。
+
+    和 _first_visible 分工要分清：那个只看盒子非零，屏幕外的元素照样算「可见」；
+    这个才是「看得见」。所以「已经在屏幕上就别再滚」要用本函数判断。
+    """
+    try:
+        m = locator.evaluate(_MEASURE_JS, _viewport_h(page))
+    except Exception:
+        return False
+    if not m:
+        return False
+    vh = _viewport_h(page)
+    center = m["y"] + m["h"] / 2
+    return 120 <= center <= vh - 150
+
+
+def _scroll_into_comfortable_view(page, locator, tries=2, label=""):
+    """把元素滚进视口中部：一次算准，不做滚轮试探。
+
+    改这个函数的起因：使用者两次反馈同一个现象——选 TikTok Mini、选价值类型时
+    【滚轮一直上下滑动，十几秒才定位到】。
+
+    老写法是「scrollIntoView 之后接一个 14 轮的 mouse.wheel 修正循环」，每轮等
+    350ms、走 JS 兜底那支还要再等 400ms。所以单次调用最坏就是 5～6 秒，而选 Mini
+    和选价值类型外面都套着 3 轮重试 —— 一步花掉十几秒完全对得上。
+
+    我没能确诊【为什么它收敛不了】：拿本地 fixture 复现过 shadow DOM 占位文字、
+    3200px 高的表单容器、吸顶吸底、CSS smooth 滚动，四种情况下老写法都是 421ms
+    一次到位。所以这里不写死一个病因，改成让它【不可能慢】，并且把量到的位置打进
+    日志——下次真机上还慢，日志会直接说出是哪一步、y 在怎么跳。
+
+    现在只做两件事，最坏一秒出头：
+      ① scrollIntoView({block:'center', behavior:'instant'})，浏览器一次算准
+      ② 只有被顶部导航 / 底部操作栏挡住时，用 JS 补最多 tries 次位移
+
+    顺手修掉的一个真问题：舒适区以前按 page.viewport_size 算，那是【要求的】视口
+    高度，不是真的（见 _viewport_h）。1000 减 230 得 770，而真实视口只有 700 上下，
+    于是屏幕外的元素也会被判「到位」。
+
+    还留着的老经验：
+      * bounding_box() 对 shadow DOM 的 <slot> 返回 None，要往上找有盒子的祖先
+      * _first_visible 认为屏幕外的元素也「可见」，所以不能写成「找不到才滚」；
+        要判断「在不在屏幕上」用 _on_screen
+    """
+    vh = _viewport_h(page)
+    top_safe, bottom_safe = 170, vh - 200      # 避开顶部导航和底部固定操作栏
+    target_y = (top_safe + bottom_safe) // 2
+    t0 = time.monotonic()
+    trace = []
+
+    def measure():
         try:
-            return locator.evaluate("""el => {
-              let n = el;
-              for (let k = 0; k < 6 && n; k++) {
-                const r = n.getBoundingClientRect();
-                if (r.width > 0 && r.height > 0)
-                  return {y: r.y, h: r.height, x: r.x, w: r.width};
-                n = n.parentElement;
-              }
-              return null;
-            }""")
+            return locator.evaluate(_MEASURE_JS, vh)
         except Exception:
             return None
 
-    # 先用 scrollIntoView 一步跳到位，不要一上来就用滚轮试探。
-    # 使用者反馈：选 TikTok Mini 时页面【一直上下滚动，花不少时间才锁定】——
-    # 原因就是只有滚轮循环：每次滚 (y - target)，但页面有吸顶/吸底、滚动被内层
-    # 容器分走，实际位移和预期对不上，于是来回修正好几轮。
-    # scrollIntoView 由浏览器一次算准，通常一次就落在中间；落不准再用滚轮微调。
-    try:
-        locator.evaluate("""el => {
-          let n = el;
-          for (let k = 0; k < 6 && n; k++) {
-            const r = n.getBoundingClientRect();
-            if (r.width > 0 && r.height > 0) {
-              n.scrollIntoView({block: 'center', inline: 'nearest'});
-              return;
-            }
-            n = n.parentElement;   // slot 之类自身没有盒子，往上找有盒子的
-          }
-        }""")
-        page.wait_for_timeout(400)
-    except Exception:
-        pass
+    def in_band(m):
+        center = m["y"] + m["h"] / 2
+        return top_safe <= center <= bottom_safe
 
-    r0 = rect()
-    if r0:
-        y0 = r0["y"] + r0["h"] / 2
-        if top_safe <= y0 <= bottom_safe:
-            return True
+    def done(ok):
+        if label:
+            ys = "→".join("?" if y is None else str(y) for y in trace) or "?"
+            ms = int((time.monotonic() - t0) * 1000)
+            print(f"          [{label}] 定位用了 {ms}ms，到位={ok}（y: {ys}）",
+                  flush=True)
+        return ok
 
     try:
-        page.mouse.move(800, 500)              # wheel 滚的是鼠标底下的容器
+        locator.evaluate(_SCROLL_CENTER_JS, vh)
     except Exception:
         pass
+    page.wait_for_timeout(350)
 
-    last_y = None
-    for _ in range(tries):
-        r = rect()
-        if not r:
-            return False
-        y = r["y"] + r["h"] / 2
-        if top_safe <= y <= bottom_safe:
-            return True
+    m = measure()
+    trace.append(None if not m else round(m["y"]))
+    if m and in_band(m):
+        return done(True)
 
-        if last_y is not None and abs(y - last_y) < 3:
-            # 滚了但没动 —— 内层可滚动容器吃掉了滚轮，改成直接设 scrollTop
-            try:
-                locator.evaluate("""(el, dy) => {
-                  let n = el;
-                  while (n) {
-                    const st = getComputedStyle(n);
-                    if (n.scrollHeight > n.clientHeight + 4 &&
-                        /auto|scroll/.test(st.overflowY)) { n.scrollTop += dy; return; }
-                    n = n.parentElement;
-                  }
-                  window.scrollBy(0, dy);
-                }""", int(y - target_y))
-                page.wait_for_timeout(400)
-            except Exception:
-                pass
-            last_y = None
-            continue
+    for _ in range(max(1, int(tries))):
+        m = measure()
+        if not m:
+            break
+        if in_band(m):
+            return done(True)
+        dy = int(m["y"] + m["h"] / 2 - target_y)
+        if abs(dy) < 8:
+            break
+        try:
+            locator.evaluate(_SCROLL_BY_JS, dy)
+        except Exception:
+            break
+        page.wait_for_timeout(300)
+        m2 = measure()
+        trace.append(None if not m2 else round(m2["y"]))
 
-        last_y = y
-        page.mouse.wheel(0, int(y - target_y))
-        page.wait_for_timeout(350)
-
-    r = rect()
-    return bool(r and top_safe <= r["y"] <= bottom_safe)
+    m = measure()
+    return done(bool(m and in_band(m)))
 
 
 def _first_visible(loc, limit=12):
@@ -906,6 +992,61 @@ def _mini_text_is_selected(text, tt_mini_id=None):
     return True
 
 
+# 「短剧」这个字段的标题，拿来当【滚动锚点】。
+#
+# 使用者的原话：「你就下滑到优化和出价下面短剧这两个字 没那么难找吧 然后看到
+# 短剧两字下面的这个框去点击」——就是这个锚点。
+#
+# 为什么锚在标题上而不是那个框上：要点的占位文字「选择 TikTok Mini」在
+# ks-input-selector 的 shadow root 里，算位置要往上找祖先（历史上 bounding_box()
+# 对它返回 None，见 select_tiktok_mini 的说明）；而这个标题是普通 DOM 里的一小段
+# 文字，自己就有真实盒子，位置一次就算准，不用猜该拿哪个祖先。
+#
+# 只当锚点、【不】当点击目标：这套「按区块标题找」的写法早先被用来找那个框本身，
+# 结果标记到的是同区块里另一个显示「无法使用此 TikTok Mini…」的元素
+# （见 _MARK_MINI_JS 上面那段说明）。锚点用错顶多滚的位置差一点，
+# 点击目标用错就会点到别处去。
+_MINI_ANCHOR_JS = """
+() => {
+  document.querySelectorAll('[data-drama-mini-anchor]').forEach(
+    e => e.removeAttribute('data-drama-mini-anchor'));
+  const secs = document.querySelectorAll('[data-testid="lego-section-item"]');
+  for (const sec of secs) {
+    const h = sec.querySelector('[data-testid="lego-section-item-header"]');
+    if (!h) continue;
+    // 恰好是「短剧」两个字。页面上「短剧」至少出现三处（优化位置的值、
+    // 这个字段的标题、左栏计划名），所以要 exact，不能用 includes。
+    if ((h.innerText || '').trim() !== '短剧') continue;
+    const r = h.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) continue;
+    h.setAttribute('data-drama-mini-anchor', '1');
+    return true;
+  }
+  return false;
+}
+"""
+
+
+def _scroll_to_drama_field(page):
+    """滚到「短剧」这个字段上（TikTok Mini 那个框就在它下面）。
+
+    找不到锚点就返回 False，让调用方退回去直接滚那个框——锚点是【加速】手段，
+    不是新的必要条件，找不到不该让整步失败。
+    """
+    try:
+        if not page.evaluate(_MINI_ANCHOR_JS):
+            return False
+    except Exception:
+        return False
+    loc = page.locator('[data-drama-mini-anchor="1"]')
+    try:
+        if loc.count() == 0:
+            return False
+    except Exception:
+        return False
+    return _scroll_into_comfortable_view(page, loc.first, label="短剧字段")
+
+
 def select_tiktok_mini(page, tt_mini_id=None, mini_name=None, timeout_seconds=90):
     """选「短剧」区块下面那个 TikTok Mini。
 
@@ -951,11 +1092,13 @@ def select_tiktok_mini(page, tt_mini_id=None, mini_name=None, timeout_seconds=90
             page.wait_for_timeout(2000)
             continue
 
-        # ② 无条件滚进视野。屏幕外的元素在 _first_visible 眼里也算「可见」，
-        #    所以绝不能写成「找不到才滚」——那样一次都不会滚。
-        ok = _scroll_into_comfortable_view(page, anchor)
-        print(f"          [mini] 第{attempt + 1}轮：滚动到位={ok}", flush=True)
-        page.wait_for_timeout(400)
+        # ② 滚到位。先拿「短剧」这个字段标题当锚点，一次就能算准；
+        #    没找到锚点、或者滚完那个框还是不在屏幕上，才退回去直接滚它自己。
+        #    判「在不在屏幕上」必须用 _on_screen —— _first_visible 认为屏幕外的
+        #    元素也「可见」，用它判断的话等于永远不滚。
+        if not _scroll_to_drama_field(page) or not _on_screen(page, anchor):
+            _scroll_into_comfortable_view(page, anchor, label="mini框")
+        page.wait_for_timeout(300)
 
         # ③ 点这段文字，展开列表
         robust_click(page, anchor, timeout=8000)
@@ -1002,11 +1145,55 @@ VALUE_TYPE_IAP = "应用内购价值"
 VALUE_TYPE_AD_REVENUE = "广告收入价值"
 
 
+def _value_type_box(page):
+    """「选择价值类型」当前那个框（收起时显示「应用内购价值」）。"""
+    return _first_visible(page.get_by_text(VALUE_TYPE_IAP, exact=True))
+
+
+def _wait_value_type_settled(page, timeout_seconds=40):
+    """等「选择价值类型」这块【出现，并且不再动】，然后才把那个框交出去。
+
+    为什么要等「不再动」——这是使用者反馈「选完 mini 之后又定位了很久、一直上下
+    滚动」的真正原因，他自己的猜测也是对的：
+      优化目标 / 选择价值类型 / 竞价策略 / 目标 ROAS 这一整块，是【选完 TikTok
+      Mini 之后才渲染出来】的（选之前优化目标那里只有一个「-」），实测要两三秒，
+      而且渲染过程中区块高度一直在变。
+    老写法一看到「应用内购价值」这几个字就去滚、去点，点在还在重排的元素上，
+    下拉没展开 → Escape → 重试 → 再滚一遍。三轮下来就是十几秒的上下滚动。
+
+    判据是【位置连续两次没变】（约 1 秒）。不用固定 sleep：加载快的时候不该白等，
+    慢的时候固定值又不够。
+    """
+    vh = _viewport_h(page)
+    stable = 0
+    last_y = None
+    rounds = max(1, int(timeout_seconds * 1000 / 500))
+    for _ in range(rounds):
+        box = _value_type_box(page)
+        if box is None:
+            stable, last_y = 0, None          # 还没渲染出来，安静等着，别滚
+        else:
+            try:
+                m = box.evaluate(_MEASURE_JS, vh)
+            except Exception:
+                m = None
+            y = None if not m else round(m["y"])
+            if y is not None and last_y is not None and abs(y - last_y) <= 2:
+                stable += 1
+                if stable >= 2:
+                    return box
+            else:
+                stable = 0
+            last_y = y
+        page.wait_for_timeout(500)
+    return _value_type_box(page)
+
+
 def select_ad_revenue_value_type(page, timeout_seconds=90):
     """把「选择价值类型」从默认的「应用内购价值」改成「广告收入价值」。
 
     位置：选完 TikTok Mini 之后、填目标 ROAS 之前。操作就是点那个框展开下拉、
-    点「广告收入价值」。
+    点「广告收入价值」。这一块要等它渲染完再动手，见 _wait_value_type_settled。
 
     沿用选 Mini 那一节踩出来的三条：
       * 找元素用 Playwright 定位器（能穿透 shadow DOM），不用 document.querySelectorAll
@@ -1030,20 +1217,20 @@ def select_ad_revenue_value_type(page, timeout_seconds=90):
         return
 
     for attempt in range(3):
-        box = wait_until(
-            page,
-            lambda: _first_visible(page.get_by_text(VALUE_TYPE_IAP, exact=True)),
-            timeout_seconds=25,
-        )
+        # 等这一块渲染出来并站稳。这期间【不滚动】——它还在重排，滚了也白滚。
+        box = _wait_value_type_settled(page, timeout_seconds=40)
         if box is None:
             if picked():
                 return
+            print(f"          [价值类型] 第{attempt + 1}轮：这一块还没渲染出来",
+                  flush=True)
             page.wait_for_timeout(1500)
             continue
 
-        ok = _scroll_into_comfortable_view(page, box)
-        print(f"          [价值类型] 第{attempt + 1}轮：滚动到位={ok}", flush=True)
-        page.wait_for_timeout(400)
+        # 已经在屏幕上就别动页面。滚动只是为了让它可点，不是为了摆得好看。
+        if not _on_screen(page, box):
+            _scroll_into_comfortable_view(page, box, label="价值类型")
+            page.wait_for_timeout(300)
 
         robust_click(page, box, timeout=8000)
         page.wait_for_timeout(1500)
@@ -1192,7 +1379,8 @@ def select_target_roas_drama(page, roas_value, timeout_seconds=150):
 
     # 使用者演示：点「请输入广告花费…」这段文字就能输入。先滚过去再点再填——
     # 这一块在页面很下面，不主动滚可能点不到实处。
-    _scroll_into_comfortable_view(page, box)
+    if not _on_screen(page, box):
+        _scroll_into_comfortable_view(page, box, label="ROAS")
     page.wait_for_timeout(400)
     try:
         from src.pages.common import robust_click as _rc
@@ -1274,6 +1462,6 @@ def set_regions_drama(page, region_pairs):
 
     field = _wait_for_region_field(page, timeout_seconds=60)
     if field:
-        _scroll_into_comfortable_view(page, field)
+        _scroll_into_comfortable_view(page, field, label="地域")
         page.wait_for_timeout(600)
     return set_regions(page, region_pairs)
