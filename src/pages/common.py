@@ -100,3 +100,39 @@ def exit_draft(page):
     if dialog.count() > 0:
         page.get_by_role("button", name="退出", exact=True).last.click(timeout=10000)
     page.wait_for_timeout(2000)
+
+
+# 「选中」状态标记。ks-* 那套组件在 class 上打这个。
+ON_CLASS_MARKER = "is-checked"
+
+
+def is_selected(el):
+    """读一个单选圈/复选框的选中状态。读不出来返回 None。
+
+    调用方【必须区分「确定没选中」和「读不出」】：把读不出当成没选中就去点，
+    会把已经选上的那个取消掉。
+
+    原来这个函数长在 src/drama/pages/adgroup_page.py 里（_is_selected）。
+    「短剧端计划」选优化位置的三个单选圈时同样要用，提到这里共用。
+    """
+    def attr(name):
+        try:
+            return el.get_attribute(name)
+        except Exception:
+            return None
+
+    cls = attr("class")
+    aria = attr("aria-checked")
+    tea = attr("data-tea-model_value")
+
+    if cls is None and aria is None and tea is None:
+        return None
+    if cls and ON_CLASS_MARKER in cls:
+        return True
+    if aria == "true":
+        return True
+    if tea == "1":
+        return True
+    if cls is not None or tea == "0":
+        return False
+    return None
