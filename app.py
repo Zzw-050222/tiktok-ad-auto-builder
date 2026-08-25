@@ -33,6 +33,7 @@ from src.drama.builder import build_drama_campaign
 from src.drama.config import DRAMA_BROWSER_PROFILE_DIR
 from src.drama.series_lookup import load_series_map, resolve_series_from_campaign_name
 from src.excel_loader import group_by_campaign, load_rows
+from src.identity_lookup import IDENTITY_FILE, identity_file_exists, load_identity_map
 
 app = Flask(__name__)
 
@@ -123,6 +124,46 @@ def _preflight_drama(groups):
         return [
             f"这些计划名在「商品库-剧目」表里匹配不到剧目，跑到「特定剧集」那步会失败："
             + "、".join(unmatched)
+        ]
+    return []
+
+
+def _preflight_identity(records):
+    """表格里要选身份，但这台电脑上没有身份对照表 —— 上传时就说，别等跑到广告层。
+
+    身份对照表按设计不进安装包（里面是真实账号信息，.gitignore 里就有它），
+    所以每台新电脑上它一开始都不存在。别人电脑上第一次跑，每条广告一进广告层级
+    就报 [Errno 2] No such file or directory 然后秒退。
+    现在缺表不再让计划挂掉（见 identity_lookup.load_identity_map），但身份确实
+    选不上，所以还是要在跑之前讲清楚。
+    """
+    want = [r for r in records if str(r.get("Identity_ID") or "").strip()]
+    if not want:
+        return []
+    if not identity_file_exists():
+        return [
+            f"表格里有 {len(want)} 行填了 Identity_ID，但这台电脑上没有身份对照表 "
+            "Identity_id.xlsx —— 这些广告的身份会选不上（其它步骤照常）。"
+            "在下面【上传身份对照表】补一份就行。这个表不在安装包里是故意的："
+            "里面是真实账号信息，不能进公开仓库。"
+        ]
+
+    # 表在，但表里查不到的 ID 也要提前说 —— 跑完才看到一堆警告没意义。
+    mapping = load_identity_map()
+    if not mapping:
+        return [
+            "身份对照表 Identity_id.xlsx 读出来是空的（页名/列顺序对不上？）。"
+            "格式参考 examples/sample_identity_id.xlsx：第一列是显示名，第二列是 Identity_ID。"
+        ]
+    missing = sorted({
+        str(r["Identity_ID"]).strip() for r in want
+        if str(r["Identity_ID"]).strip() not in mapping
+    })
+    if missing:
+        return [
+            "这些 Identity_ID 在身份对照表里找不到对应名字，这几行的身份会选不上："
+            + "、".join(missing[:10])
+            + ("…" if len(missing) > 10 else "")
         ]
     return []
 
@@ -450,6 +491,7 @@ def upload():
         return jsonify({"ok": False, "error": f"表格格式有问题: {e}"}), 400
 
     warnings = _preflight_drama(groups) if mode == "drama" else []
+    warnings += _preflight_identity(records)
 
     # 把表格里的广告主 ID 回显出来。给别人用之后这一项很重要：使用者能一眼看出
     # 程序读到的是不是他自己那个 ID，而不是跑起来才发现读错了列。
@@ -470,6 +512,61 @@ def upload():
             "warnings": warnings,
         }
     )
+
+
+@app.route("/upload-identity", methods=["POST"])
+def upload_identity():
+    """上传身份对照表。
+
+    为什么要有这个：这份表不进仓库也不进安装包（真实账号信息），所以每台新电脑上
+    都得单独补一份。以前只能靠人工把文件拷到程序文件夹根目录——别人电脑上装完
+    第一次跑，每条广告都在广告层级秒退，就是因为没人告诉他要拷这个文件。
+    """
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "没有选择文件"}), 400
+    if not f.filename.lower().endswith(".xlsx"):
+        return jsonify({"ok": False, "error": "请上传 .xlsx 文件"}), 400
+
+    # 先存到临时位置验一遍再就位，别用一个读不出来的文件把原来好的覆盖掉。
+    #
+    # 临时文件名【必须还是 .xlsx】：openpyxl 按扩展名判断格式，存成
+    # Identity_id.xlsx.tmp 的话每一次上传都会被自己的校验拒掉
+    #   openpyxl does not support .tmp file format
+    # ——第一版就是这么写的，测试里三个用例全被拒才发现。
+    tmp = IDENTITY_FILE.with_name("Identity_id.__uploading__.xlsx")
+    f.save(str(tmp))
+    try:
+        import openpyxl
+
+        wb = openpyxl.load_workbook(tmp, data_only=True)
+        ws = wb["Sheet1"] if "Sheet1" in wb.sheetnames else wb[wb.sheetnames[0]]
+        pairs = 0
+        for row in list(ws.iter_rows(values_only=True))[1:]:
+            if row and len(row) >= 2 and row[0] is not None and row[1] is not None:
+                pairs += 1
+    except Exception as e:
+        tmp.unlink(missing_ok=True)
+        return jsonify({"ok": False, "error": f"这个 .xlsx 读不出来: {e}"}), 400
+
+    if pairs == 0:
+        tmp.unlink(missing_ok=True)
+        return jsonify({
+            "ok": False,
+            "error": "表里没读到任何「显示名 + Identity_ID」。"
+                     "格式参考 examples/sample_identity_id.xlsx："
+                     "第一行是标题，第一列显示名，第二列 Identity_ID。",
+        }), 400
+
+    tmp.replace(IDENTITY_FILE)
+    return jsonify({"ok": True, "count": pairs, "filename": f.filename})
+
+
+@app.route("/identity-status")
+def identity_status():
+    if not identity_file_exists():
+        return jsonify({"exists": False, "count": 0})
+    return jsonify({"exists": True, "count": len(load_identity_map())})
 
 
 @app.route("/run", methods=["POST"])

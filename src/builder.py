@@ -1,6 +1,6 @@
 import re
 
-from src.identity_lookup import resolve_identity
+from src.identity_lookup import identity_file_exists, resolve_identity
 from src.pages.ad_page import (
     fill_ad_copy,
     fill_landing_url,
@@ -161,8 +161,15 @@ def fill_ad_identity_copy_url(page, rec, advertiser_id):
             # 身份不是关键项——短剧那条流程压根不选它，TikTok 会自己填好——所以它失败
             # 只该变成一句警告，绝不该把整个计划搞挂。
             identity_issue = f"选身份失败（不影响其它步骤）: {str(e).splitlines()[0][:120]}"
+    elif identity_id and not identity_file_exists():
+        # 这台电脑上根本没有身份对照表。这【不是】表格填错，别让人去查表格。
+        identity_issue = (
+            "这台电脑上没有身份对照表 Identity_id.xlsx，所以这条广告的身份没选，"
+            "其它都正常。这个表按设计不进安装包（里面是真实账号信息），"
+            "在网页第 3 步上传一份，或者直接放到程序文件夹根目录。"
+        )
     elif identity_id:
-        identity_issue = f"Identity_ID '{identity_id}' 在 identity_id.xlsx 里找不到对应名字"
+        identity_issue = f"Identity_ID '{identity_id}' 在 Identity_id.xlsx 里找不到对应名字"
 
     fill_ad_copy(page, str(rec["ads_text"]))
     fill_landing_url(page, str(rec["TT Mini URL"]))

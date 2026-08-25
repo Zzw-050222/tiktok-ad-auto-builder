@@ -181,6 +181,30 @@
   .note.err { background: var(--err-bg); border-color: rgba(248,113,113,.25); color: var(--err); }
   .note.warn{ background: rgba(251,191,36,.09); border-color: rgba(251,191,36,.25); color: var(--warn); }
 
+  /* ---------- 身份对照表 ---------- */
+  .idbox {
+    margin-top: 18px; padding-top: 16px;
+    border-top: 1px solid var(--border-soft);
+  }
+  .idbox-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; font-size: 13.5px; font-weight: 600;
+  }
+  .idbox-sub { font-weight: 400; opacity: .5; font-size: 12px; }
+  .idbox-state { font-size: 12px; font-weight: 500; flex: none; }
+  .idbox-state.has { color: var(--ok); }
+  .idbox-state.miss { color: var(--warn); }
+  .idbox-hint { margin-top: 7px; font-size: 12.5px; line-height: 1.65; opacity: .62; }
+  .idbtn {
+    display: inline-block; margin-top: 11px; padding: 7px 13px;
+    border: 1px solid var(--border); border-radius: 8px;
+    font-size: 12.5px; cursor: pointer; user-select: none;
+  }
+  .idbtn:hover { border-color: var(--accent); }
+  .idmsg { margin-left: 10px; font-size: 12.5px; }
+  .idmsg.ok  { color: var(--ok); }
+  .idmsg.err { color: var(--err); }
+
   /* ---------- 发布开关 ---------- */
   .switch-row {
     display: flex; align-items: flex-start; gap: 12px;
@@ -348,6 +372,25 @@
     <div class="note ok"   id="noteOk"></div>
     <div class="note err"  id="noteErr"></div>
     <div class="note warn" id="noteWarn"></div>
+
+    <!-- 身份对照表。单独放一块，因为它【不在安装包里】：里面是真实账号信息，
+         不能进公开仓库。所以每台新电脑都得补一份，不补的话广告层选不了身份。 -->
+    <div class="idbox">
+      <div class="idbox-head">
+        <span>身份对照表 <span class="idbox-sub">Identity_id.xlsx</span></span>
+        <span class="idbox-state" id="idState">检查中…</span>
+      </div>
+      <div class="idbox-hint">
+        把 <b>Identity_ID</b> 换成 TikTok 上显示的账号名。这个表<b>不在安装包里</b>
+        （真实账号信息不能进公开仓库），所以每台电脑要单独上传一次，上传后一直有效。
+        没有它也能搭建，只是<b>身份选不上</b>。格式看 examples/sample_identity_id.xlsx。
+      </div>
+      <label class="idbtn">
+        选择 Identity_id.xlsx
+        <input type="file" id="idInput" accept=".xlsx" hidden>
+      </label>
+      <span class="idmsg" id="idMsg"></span>
+    </div>
   </div>
 
   <div class="card">
@@ -536,6 +579,54 @@ dropzone.addEventListener('drop', e => {
 });
 fileInput.addEventListener('change', () => {
   if (fileInput.files.length) doUpload(fileInput.files[0]);
+});
+
+// ---------- 身份对照表 ----------
+// 这个表不在安装包里（真实账号信息不能进公开仓库），每台新电脑都要单独补一份。
+// 不补的话广告层选不了身份 —— 以前这里是直接抛 FileNotFoundError 把整条计划弄挂。
+const idInput = document.getElementById('idInput');
+const idState = document.getElementById('idState');
+const idMsg   = document.getElementById('idMsg');
+
+function refreshIdState() {
+  fetch('/identity-status')
+    .then(r => r.json())
+    .then(d => {
+      if (d.exists) {
+        idState.textContent = `已就位 · ${d.count} 条`;
+        idState.className = 'idbox-state has';
+      } else {
+        idState.textContent = '未上传';
+        idState.className = 'idbox-state miss';
+      }
+    })
+    .catch(() => { idState.textContent = ''; idState.className = 'idbox-state'; });
+}
+refreshIdState();
+
+idInput.addEventListener('change', () => {
+  if (!idInput.files.length) return;
+  idMsg.textContent = '上传中…';
+  idMsg.className = 'idmsg';
+  const form = new FormData();
+  form.append('file', idInput.files[0]);
+  fetch('/upload-identity', { method: 'POST', body: form })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        idMsg.textContent = `✓ ${d.filename}，读到 ${d.count} 条身份`;
+        idMsg.className = 'idmsg ok';
+      } else {
+        idMsg.textContent = d.error || '上传失败';
+        idMsg.className = 'idmsg err';
+      }
+      refreshIdState();
+      idInput.value = '';   // 允许重新选同一个文件再传一次
+    })
+    .catch(e => {
+      idMsg.textContent = '上传失败：' + e;
+      idMsg.className = 'idmsg err';
+    });
 });
 
 function doUpload(file) {

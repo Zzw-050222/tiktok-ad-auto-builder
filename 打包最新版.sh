@@ -95,7 +95,7 @@ echo "==> 生成 $ZIP_NAME （$(du -h "$ZIP_NAME" | cut -f1)，$(git ls-files | 
 # 真实的身份表是根目录下的 Identity_id.xlsx，所以用 ^auto-builder/ 锚定根目录。
 BAD=$(unzip -Z1 "$ZIP_NAME" \
   | grep -v '^auto-builder/examples/' \
-  | grep -Ei 'browser_profile|/venv/|^auto-builder/logs/|^auto-builder/uploads/|^auto-builder/data/|短剧|商品库|搭建表|^auto-builder/Identity_id\.xlsx|260810' \
+  | grep -Ei 'browser_profile|/venv/|^auto-builder/logs/|^auto-builder/uploads/|^auto-builder/data/|短剧|商品库|搭建表|^auto-builder/Identity_id.*\.xlsx|260810' \
   || true)
 if [ -n "$BAD" ]; then
   echo "✗ zip 里出现了不该有的东西，已中止，请检查 .gitignore："

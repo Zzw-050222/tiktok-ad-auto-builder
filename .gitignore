@@ -12,7 +12,9 @@ logs/
 uploads/
 data/
 inspect_out.json
-Identity_id.xlsx
+# 身份对照表（真实账号信息）。通配符要覆盖网页上传时的临时文件
+# Identity_id.__uploading__.xlsx —— 它和正式表一样是账号数据。
+Identity_id*.xlsx
 260810-1.xlsx
 campaign_bulk_*.xlsx
 *.output
