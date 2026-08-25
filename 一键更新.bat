@@ -19,7 +19,12 @@ echo.
 
 where git >nul 2>nul
 if errorlevel 1 (
-  echo [X] 这台电脑没装 git。先去 https://git-scm.com/download/win 装一个。
+  echo [X] 这台电脑没装 git，没法自动更新。两个办法，选一个：
+  echo.
+  echo   1. 装 git（推荐，以后就能一键更新）：https://git-scm.com/download/win
+  echo   2. 不装 git：去私有仓库下载 auto-builder-最新版.zip，
+  echo      解压后把文件覆盖到这个文件夹即可。venv、登录态、日志、你的表格
+  echo      都不在那个压缩包里，覆盖不会动它们。
   goto :end
 )
 

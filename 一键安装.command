@@ -115,7 +115,22 @@ fi
 # ---- 6. 接到 GitHub，方便以后一键更新 ----
 # 从 zip 解压出来的文件夹没有 .git，接上之后双击「一键更新」就能拉最新代码。
 # 代码仓库是【公开】的，不用登录 GitHub 也能拉。
-if command -v git >/dev/null 2>&1; then
+#
+# git 能不能用不能写成 command -v git ——没装「命令行开发者工具」的 Mac 上
+# /usr/bin/git 照样存在，判断会通过，然后真去调用才弹「"git" 命令需要使用
+# 命令行开发者工具」的窗口。也不能靠「跑一下 git --version 试试」：那一下本身
+# 就会把弹窗招出来。所以只认「不是苹果占位符」或「开发者工具确实装好了」。
+git_usable() {
+  local g
+  g=$(command -v git 2>/dev/null) || return 1
+  [ -n "$g" ] || return 1
+  if [ "$g" = "/usr/bin/git" ]; then
+    xcode-select -p >/dev/null 2>&1 || return 1
+  fi
+  return 0
+}
+
+if git_usable; then
   if [ ! -d .git ]; then
     git init -q >/dev/null 2>&1
     git remote add origin "$REPO" >/dev/null 2>&1
@@ -125,7 +140,9 @@ if command -v git >/dev/null 2>&1; then
     ok "已接到 GitHub"
   fi
 else
-  warn "这台电脑没装 git，装好之后才能用「一键更新」。装法：在终端执行 xcode-select --install"
+  # 不是错误，也不用装 git：一键更新里有一条 curl 的退路，不需要开发者工具。
+  warn "这台电脑用不了 git（没装「命令行开发者工具」）——不影响使用。
+    以后双击「一键更新.command」会自动改用直接下载的方式，一样能更新。"
 fi
 
 # ---- 7. 自检 ----
