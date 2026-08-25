@@ -51,21 +51,29 @@ cat > "$TMP/auto-builder/版本.txt" <<TXT
 来源仓库: $(git remote get-url origin)
 
 —— 装到一台新电脑 ——
-1. 解压，把 auto-builder 文件夹放到你想放的地方
-2. Mac: 双击 run_web.sh 之前先在终端里执行一次
-       python3 -m venv venv
-       venv/bin/pip install -r requirements.txt
-       venv/bin/playwright install chromium
-   Windows: 用 run_web.bat 之前先执行
-       python -m venv venv
-       venv\\Scripts\\pip install -r requirements.txt
-       venv\\Scripts\\playwright install chromium
-3. 起服务：Mac 执行 ./run_web.sh，Windows 双击 run_web.bat
-4. 浏览器打开 http://127.0.0.1:5050
+1. 解压，把 auto-builder 文件夹放到你想放的地方（比如桌面）
+2. 进到 auto-builder 文件夹里，双击：
+       Mac    : 一键安装.command   （第一次要右键 →「打开」→「打开」）
+       Windows: 一键安装.bat
+   它会自己装好 Python 环境和 Chromium 浏览器，装完会自检一遍。要几分钟。
+3. 装完双击：
+       Mac    : 启动.command
+       Windows: run_web.bat
+4. 浏览器会自动打开 http://127.0.0.1:5050
 5. 在网页第 2 步点【登录 / 换账号】，用自己的 BC 账号登录
 
+不用手敲命令。以前这里写的是三行 python 命令，但那三行【必须在 auto-builder
+文件夹里】敲——终端一打开在主目录，直接粘进去只会报「找不到 requirements.txt」。
+双击的脚本自己知道自己在哪，不会有这个问题。
+
+（也可以完全不用这个 zip：代码仓库是公开的，在终端里粘这一行就装好了
+     git clone https://github.com/Zzw-050222/tiktok-ad-auto-builder.git ~/Desktop/auto-builder && cd ~/Desktop/auto-builder && bash 一键安装.command
+ 这条路不用下载 zip，也不会碰到 macOS 的「无法验证开发者」拦截。）
+
 —— 更新一台已经装好的电脑 ——
-把解压出来的文件【覆盖】到原来的文件夹即可。
+双击【一键更新.command】(Mac) / 【一键更新.bat】(Windows) 就行，不用下这个 zip。
+
+要用 zip 更新的话，把解压出来的文件【覆盖】到原来的文件夹即可。
 venv/、browser_profile*（登录态）、logs/、uploads/、你的 .xlsx 表格都不在这个包里，
 所以覆盖不会动它们，登录态和数据都还在。
 如果 requirements.txt 变了，再跑一次 pip install -r requirements.txt。
