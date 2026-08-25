@@ -74,12 +74,23 @@ elif [ "$BEFORE_REQ" != "$AFTER_REQ" ]; then
   echo "依赖已更新。"
 fi
 
-chmod +x run_web.sh 一键更新.command 2>/dev/null || true
+# 新拉下来的脚本也要给执行权限。git 自己会带 100755 过来，但从 zip 装的那批
+# 文件夹里旧文件的权限位可能已经被解压工具改过，补一次不亏。
+chmod +x run_web.sh 一键更新.command 一键安装.command 启动.command 2>/dev/null || true
+
+# 从网上下的 zip 解压出来带 com.apple.quarantine，双击 .command 会弹
+# 「无法验证开发者」。更新完顺手解一次，免得使用者每加一个新脚本就要右键一次。
+#
+# 只扫最外层的文件，不用 xattr -dr：递归会把 venv/ 和 browser_profile/ 里
+# 几万个文件全走一遍，白等好几秒，而要双击的脚本本来就都在最外层。
+if command -v xattr >/dev/null 2>&1; then
+  find . -maxdepth 1 -type f -exec xattr -d com.apple.quarantine {} \; >/dev/null 2>&1 || true
+fi
 
 say "✓ 更新完成"
 cat <<'TXT'
 接下来：
-  · 双击 run_web.sh 启动（或在终端执行 ./run_web.sh）
+  · 双击【启动.command】（或在终端执行 ./run_web.sh）
   · 浏览器打开 http://127.0.0.1:5050
   · 第一次用要在网页第 2 步点【登录 / 换账号】，登录自己的 BC 账号
 
