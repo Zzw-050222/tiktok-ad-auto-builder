@@ -837,6 +837,7 @@ def fill_adgroup_core(page, rec, identity_name, series_name, region_pairs):
         -> （等三四秒重新渲染，往下滑到能看到身份框和剧集框）
         -> 身份
         -> 剧集
+        -> 选择价值类型（= 广告收入价值）
         -> 目标 ROAS
         -> 地域
         -> 继续
@@ -845,6 +846,8 @@ def fill_adgroup_core(page, rec, identity_name, series_name, region_pairs):
       * 广告组名称   复用小游戏 src/pages/adgroup_page.fill_ad_group_name
       * 优化位置     本文件新写（三个模式的分界点）
       * 身份 / 剧集  本文件新写（商品库那边没有这两个字段）
+      * 价值类型     复用 src/pages/value_type.select_ad_revenue_value_type
+                     —— 使用者确认要「广告收入价值」，和商品库同一个要求
       * 目标 ROAS    复用 src/pages/roas.set_target_roas_shared
                      —— 出价区块结构和商品库一模一样（竞价策略=目标 ROAS 且共享设置、
                         下面是「第 0 天 ROAS」+「请输入一个值」）
@@ -888,6 +891,20 @@ def fill_adgroup_core(page, rec, identity_name, series_name, region_pairs):
 
     # ---- 剧集 ----（这个是关键项，选不上必须停）
     select_series_episode(page, series_name)
+
+    # ---- 选择价值类型 = 广告收入价值 ----
+    # 使用者确认过这一项要的是「广告收入价值」。
+    #
+    # 截图上它显示成【纯文本 + 共享设置】而不是下拉，说明是从同账号上一个计划
+    # 带过来的、这个账号上本来就对。但「已经对了」不等于「每个账号都对」——
+    # 带过来的要是「应用内购价值」，这条计划就会按错的目标去优化、花错的钱。
+    # 所以还是走一遍：已经对了会立刻返回（函数自己有这个判断），不对才去改。
+    #
+    # 这一步【是关键项】，改不了就停。和身份不同：身份选错只是发布者显示不对，
+    # 价值类型错了是优化目标错了。
+    from src.pages.value_type import select_ad_revenue_value_type
+
+    select_ad_revenue_value_type(page)
 
     # ---- 目标 ROAS ----
     from src.pages.roas import set_target_roas_shared
