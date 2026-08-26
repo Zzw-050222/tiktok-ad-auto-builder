@@ -11,6 +11,8 @@ drama 那边保留同名别名（select_target_roas_drama 等），调用点一�
 
 import re
 
+from src.pages.viewport import on_screen, scroll_into_comfortable_view
+
 
 def first_visible(loc, limit=12):
     """一批匹配里挑真正可见的那一个。这个后台到处是同文本的隐藏副本。"""
@@ -145,8 +147,8 @@ def set_target_roas_shared(page, roas_value, timeout_seconds=150):
 
     # 使用者演示：点「请输入广告花费…」这段文字就能输入。先滚过去再点再填——
     # 这一块在页面很下面，不主动滚可能点不到实处。
-    if not _on_screen(page, box):
-        _scroll_into_comfortable_view(page, box, label="ROAS")
+    if not on_screen(page, box):
+        scroll_into_comfortable_view(page, box, label="ROAS")
     page.wait_for_timeout(400)
     try:
         from src.pages.common import robust_click as _rc

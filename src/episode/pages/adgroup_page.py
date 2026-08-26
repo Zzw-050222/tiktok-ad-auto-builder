@@ -666,90 +666,63 @@ def _type_search(page, text):
     return True
 
 
-def _click_row_containing(page, text, exclude_texts=()):
+def _click_row_containing(page, text, exclude_texts=(), found=None):
     """在展开的下拉里点包含 text 的那一行。
 
-    从文字往上走到「行」再点：这个后台的下拉项，文字节点本身经常不是可点的目标
-    （商品库选剧集、选 Mini 都是这个套路）。
-    exclude_texts 用来排掉下拉外面的同名文字 —— 比如身份下拉展开时，
-    收起态那个框里【也】写着当前身份名，点它只会把下拉关掉。
+    下拉开着的时候【绝对不要滚页面，也不要用 robust_click】：
+      * 滚页面会把下拉一起挪走（它锚在字段上），算好的坐标当场失效；
+      * robust_click 点不到就升级成 JS 派发 el.click()，那是无视遮挡的 ——
+        下拉正好盖在「优化位置」那三个单选圈上面，穿过去就把已经选好的
+        「剧集」改回了别的，于是下一轮「剧集」字段整个消失。
+        真机日志里连着两轮「没找到『剧集』字段」就是这么来的。
+    交给 Playwright 自己点：它会把元素滚进【它所在的那个滚动容器】（下拉内部的
+    滚动条），并且做可点性检查，被遮挡就报错而不是硬点。
+
+    排掉搜索框那一层 —— 我刚把名字敲进搜索框，那几个字当然也匹配。
     """
-    cands = page.get_by_text(str(text), exact=False)
-    try:
-        n = cands.count()
-    except Exception:
+    row = found if found is not None else _option_row_visible(page, text)
+    if row is None:
         return False
-    for i in range(min(n, 20)):
-        el = cands.nth(i)
-        try:
-            if not el.is_visible():
-                continue
-            txt = (el.inner_text(timeout=1500) or "").strip()
-        except Exception:
-            continue
-        if any(bad and bad in txt for bad in exclude_texts):
-            continue
-        marked = el.evaluate("""el => {
+
+    # 从文字往上找到「一行」。最内层优先：点行里面的子元素会冒泡到行上照样生效，
+    # 点行外面的容器才可能落到别的行去。
+    try:
+        marked = row.evaluate("""el => {
           document.querySelectorAll('[data-ep-row]').forEach(
             e => e.removeAttribute('data-ep-row'));
           let n = el;
           for (let k = 0; k < 8 && n; k++) {
-            n = n.parentElement;
-            if (!n) break;
             const r = n.getBoundingClientRect();
-            // 选项整行：够宽、但不是整个下拉容器
-            if (r.width > 200 && r.height >= 28 && r.height < 160) {
+            const st = getComputedStyle(n);
+            if (r.width > 200 && r.height >= 28 && r.height < 160
+                && st.pointerEvents !== 'none') {
               n.setAttribute('data-ep-row', '1');
               return true;
             }
+            n = n.parentElement;
           }
           return false;
         }""")
-        row = page.locator('[data-ep-row="1"]').first if marked else el
-        if not on_screen(page, row):
-            scroll_into_comfortable_view(page, row)
-        robust_click(page, row, timeout=6000)
-        return True
+    except Exception:
+        marked = False
+
+    targets = []
+    if marked:
+        loc = page.locator('[data-ep-row="1"]')
+        try:
+            if loc.count() > 0:
+                targets.append(loc.first)
+        except Exception:
+            pass
+    targets.append(row)
+
+    for t in targets:
+        try:
+            t.click(timeout=8000)
+            return True
+        except Exception:
+            continue
     return False
-
-
-# 读字段当前显示的值时，必须【跳过展开着的下拉】。
-#
-# 这是测出来的一个真 bug，而且是最坏的那种：下拉是字段的子元素，
-# inner_text 会把下拉里所有选项一起读进来，于是「要选的名字在不在当前值里」
-# 永远成立 —— 明明还没选上，程序却宣布「已选中」。
-# 「验证要看结果不看动作」这条又差点被自己绕过去。
-#
-# 判据是 position: absolute/fixed：这类浮层一定是定位出来的，而字段里正常的
-# 标题/值都是静态流。顺便也盖住了下拉渲染在 body 上（portal）的情况——
-# 那时候字段里本来就没有下拉内容，这个过滤不会误伤。
-_FIELD_VALUE_JS = """
-el => {
-  let out = '';
-  const walk = (n) => {
-    if (!n) return;
-    if (n.nodeType === 3) { out += n.textContent + ' '; return; }
-    // ShadowRoot / DocumentFragment 是 nodeType 11。
-    // 原来这里只有 `if (n.nodeType !== 1) return;`，于是下面 walk(n.shadowRoot)
-    // 传进来的 shadow root 一进门就被弹回去 —— shadow DOM 里的内容一个字都读不到。
-    // 后果：ks-select 的值（身份、剧集都在 shadow 里）永远读成 None，
-    // 明明选上了也判成没选上，然后一轮轮重试，反而把前面选好的东西点乱。
-    if (n.nodeType === 11) {
-      for (const c of n.childNodes || []) walk(c);
-      return;
-    }
-    if (n.nodeType !== 1) return;
-    const st = getComputedStyle(n);
-    if (st.position === 'absolute' || st.position === 'fixed') return;  // 展开的下拉
-    if (st.display === 'none' || st.visibility === 'hidden') return;
-    if (n.tagName === 'SLOT') { for (const a of n.assignedNodes()) walk(a); return; }
-    if (n.shadowRoot) { walk(n.shadowRoot); return; }
-    for (const c of n.childNodes || []) walk(c);
-  };
-  walk(el);
-  return out.replace(/\\s+/g, ' ').trim();
-}
-"""
 
 
 def _field_value(page, title, strip_words=()):
@@ -805,13 +778,12 @@ def _series_not_found_showing(page):
 
 
 def _option_row_visible(page, want):
-    """下拉列表里【真的有】叫这个名字的选项行吗。
+    """下拉列表里【真的有】叫这个名字的选项行吗（身份用的就是这一版）。
 
-    必须排掉搜索框自己 —— 我刚把剧名敲进搜索框，那几个字当然在页面上；
-    第一版就是拿 get_by_text(剧名) 直接判断，于是搜出「未找到剧集」的时候
-    照样报「列表里出现=True」，然后去点一个不存在的行，点歪到下拉底下的
-    优化位置单选圈上，把刚选好的「剧集」又改回去了
-    （日志里「第2轮：没找到「剧集」字段」就是这么来的）。
+    只排掉搜索框和输入框 —— 我刚把名字敲进搜索框，那几个字当然也匹配。
+    身份这一步用它是安全的：身份名（WeShorts_US）不会出现在计划名里。
+    剧集【不能】用这一版，剧名来自计划名开头，页面上到处都是，
+    见 _series_option_row。
     """
     loc = page.get_by_text(str(want), exact=False)
     try:
@@ -827,7 +799,6 @@ def _option_row_visible(page, want):
               const tag = el.tagName.toLowerCase();
               if (tag === 'input' || tag === 'textarea') return true;
               if (el.closest && el.closest('input,textarea')) return true;
-              // 搜索框那一层（自己或祖先带 placeholder）也要排掉
               let n = el;
               for (let k = 0; k < 4 && n; k++) {
                 if (n.getAttribute && n.getAttribute('placeholder')) return true;
@@ -840,6 +811,105 @@ def _option_row_visible(page, want):
         except Exception:
             continue
     return None
+
+
+# 剧集列表的行长这样（真机实测）：缩略图 + 剧名 + 「31 视频 · 22m」。
+# 「视频」这两个字就是最好的判据 —— 左侧计划树那一行只有计划名，没有它。
+_SERIES_ROW_MARK = "视频"
+
+
+def _series_option_row(page, want):
+    """剧集下拉里那一行。比身份严格得多，因为剧名到处都是。
+
+    真机上花了很久才定位到的一个坑（使用者一眼看出来的）：
+    剧名是从【计划名开头】取的，所以左侧计划树里那行计划名、广告组名称输入框里，
+    都含这几个字。原来在整页范围里取第一个匹配，命中的就是【左侧那一列】，
+    点下去直接跳回计划层级（URL 变成 create/campaign），广告组页整个没了，
+    后面才会报「优化位置字段不在了」。
+
+    判据：候选往上找到的那一行，文字里必须带「视频」——
+    那是剧集行独有的（「31 视频 · 22m」）。左侧计划树的行不会有。
+    """
+    loc = page.get_by_text(str(want), exact=False)
+    try:
+        n = loc.count()
+    except Exception:
+        return None
+    for i in range(min(n, 25)):
+        el = loc.nth(i)
+        try:
+            if not el.is_visible():
+                continue
+            ok = el.evaluate("""(el, mark) => {
+              const tag = el.tagName.toLowerCase();
+              if (tag === 'input' || tag === 'textarea') return false;
+              if (el.closest && el.closest('input,textarea')) return false;
+              let n = el;
+              for (let k = 0; k < 4 && n; k++) {
+                if (n.getAttribute && n.getAttribute('placeholder')) return false;
+                n = n.parentElement;
+              }
+              // 往上找到「一行」，看那一行有没有「视频」字样
+              n = el;
+              for (let k = 0; k < 8 && n; k++) {
+                const r = n.getBoundingClientRect();
+                if (r.width > 200 && r.height >= 28 && r.height < 160) {
+                  return (n.innerText || '').includes(mark);
+                }
+                n = n.parentElement;
+              }
+              return false;
+            }""", _SERIES_ROW_MARK)
+            if ok:
+                return el
+        except Exception:
+            continue
+    return None
+
+
+# 当前展开的那个下拉浮层。用【搜索框】反推：搜索框在哪个浮层里，那个就是。
+#
+# 为什么必须限定在浮层里找选项 —— 这是真机上最贵的一个教训：
+# 剧名是从【计划名开头】取的，所以左边那一列的计划名、广告组名里当然都有这几个字。
+# 原来在整个页面范围里 get_by_text(剧名)，DOM 顺序上第一个命中的就是
+# 【左侧计划树里那一行】，点下去直接跳回计划层级（URL 变成 create/campaign），
+# 广告组页整个没了 —— 于是后面报「优化位置字段不在了」，看着像优化位置被改回去，
+
+def _wait_row_settled(page, want, timeout_seconds=30, finder=None):
+    """等下拉里那一行出现【并且位置不再动】，然后才把它交出去。
+
+    为什么非要等「不动」：搜索是异步过滤的，列表会重排。
+    探针里搜完固定等 6 秒再点，一次就成；正式代码一发现行就点，连点 3 轮都失败 ——
+    点到的是马上要被替换掉的那一行。这个坑在这个项目里已经是第三次
+    （价值类型、商品库的 Mini / 价值类型都是它），所以按「位置连续两次不变」判，
+    不用固定 sleep：快的时候不白等，慢的时候固定值又不够。
+
+    finder 让调用方指定用哪个查找器 —— 身份用宽松的 _option_row_visible，
+    剧集必须用严格的 _series_option_row（剧名到处都是）。
+    """
+    find = finder or _option_row_visible
+    vh = viewport_h(page)
+    stable, last = 0, None
+    rounds = max(1, int(timeout_seconds * 1000 / 500))
+    for _ in range(rounds):
+        row = find(page, want)
+        if row is None:
+            stable, last = 0, None
+        else:
+            try:
+                m = row.evaluate(MEASURE_JS, vh)
+                y = None if not m else round(m["y"])
+            except Exception:
+                y = None
+            if y is not None and last is not None and abs(y - last) <= 2:
+                stable += 1
+                if stable >= 2:
+                    return row
+            else:
+                stable = 0
+            last = y
+        page.wait_for_timeout(500)
+    return find(page, want)
 
 
 def _picked_by_locator(page, want, title):
@@ -929,12 +999,8 @@ def select_identity_episode(page, identity_name, timeout_seconds=60):
         # 「只有几个身份共享给这个账号，不用搜，直接点匹配的那一个」。
         #
         # 列表是异步加载的，等它把那一行渲染出来再点，别一开就点。
-        got = wait_until(
-            page,
-            lambda: _first_visible(page.get_by_text(want, exact=False)) is not None,
-            timeout_seconds=20,
-        )
-        print(f"          [身份] 第{attempt + 1}轮：{how}，列表里出现「{want}」={bool(got)}",
+        got = _wait_row_settled(page, want, timeout_seconds=20)
+        print(f"          [身份] 第{attempt + 1}轮：{how}，列表里出现「{want}」={got is not None}",
               flush=True)
 
         # 排掉收起态那个框里的同名文字（点它只会把下拉关掉）
@@ -963,9 +1029,15 @@ def select_series_episode(page, series_name, timeout_seconds=90):
     """选剧集。
 
     使用者口述：点剧集下面那个框（写着「选择剧集」，点那几个字就行），出现小列表，
-    上面可以搜索，搜到再点就选中了。
+    上面可以搜索，搜到再点就选中了。剧目很多，要投的那部可能在很下面，所以一定要搜。
 
-    列表每行是「缩略图 + 剧名 + N 视频 · X.Xm」，所以按剧名匹配、从剧名往上走到行。
+    重试策略是使用者定的：「你搜到了，他只是没刷新出来，你直接关了，等五秒刷新一下」。
+    所以失败一轮就【关掉下拉、等 5 秒、重新打开再搜】，而不是在开着的下拉里反复点。
+
+    另外带一道自愈：真机日志里第 1 轮失败之后，「剧集」这个字段会整个消失 ——
+    说明那一次点击落到了下拉底下的「优化位置」单选圈上，把它从「剧集」改回去了。
+    所以每轮开头先确认字段还在，不在就把优化位置重新选回剧集。
+    不做这个的话，后面两轮只会一直报「没找到剧集字段」，白跑。
     """
     want = str(series_name or "").strip()
     if not want:
@@ -978,7 +1050,21 @@ def select_series_episode(page, series_name, timeout_seconds=90):
         print(f"          [剧集] 已经是「{want}」，不用改", flush=True)
         return
 
-    for attempt in range(3):
+    for attempt in range(4):
+        # 自愈：字段没了说明优化位置被点回去了，先修回来
+        if not series_field_present(page):
+            print(f"          [剧集] 第{attempt + 1}轮：「剧集」字段不在了"
+                  "（优化位置被改回去了），先重新选回剧集", flush=True)
+            try:
+                select_optimization_location_episode(page)
+                wait_fields_settled(page)
+                page.wait_for_timeout(1500)
+            except Exception as e:
+                raise ValueError(
+                    f"想把「优化位置」修回「剧集」再选剧集，但修不回来: "
+                    f"{str(e).splitlines()[0][:140]}"
+                )
+
         box, fld = _field_box(page, SERIES_FIELD_TITLE)
         if box is None:
             print(f"          [剧集] 第{attempt + 1}轮：没找到「剧集」字段", flush=True)
@@ -989,53 +1075,61 @@ def select_series_episode(page, series_name, timeout_seconds=90):
         how = _click_box(page, box)
         page.wait_for_timeout(1500)
 
-        # 剧集列表很长（这个账号里几十上百部），必须靠搜索。
-        # 但列表是异步拉的、还会失败 —— 真机上见过顶部弹「网络错误。请稍后重试。」，
-        # 下拉底部就带着一个「刷新」按钮。所以：搜完等结果，等不到就按刷新再等一轮。
         searched = _type_search(page, want)
-        found = wait_until(
-            page, lambda: _option_row_visible(page, want), timeout_seconds=25)
-        if not found and _network_error_showing(page):
-            print("          [剧集] 列表报了网络错误，点「刷新」再等一轮", flush=True)
-            if _click_refresh(page):
-                page.wait_for_timeout(2500)
-                _type_search(page, want)
-                found = wait_until(
-                    page, lambda: _option_row_visible(page, want), timeout_seconds=25)
+        found = _wait_row_settled(page, want, finder=_series_option_row)
 
-        # 平台直说「未找到剧集」的时候，就别再点了 —— 列表是空的，
-        # 再点只会点到下拉底下的东西（优化位置的单选圈就在下面），
-        # 把已经选好的「剧集」改回去。这不是定位问题，是这个账号里没有这部剧。
-        if not found and _series_not_found_showing(page):
+        # 列表报网络错误 / 干脆没加载出来时，点一下下拉底部那个「刷新」
+        if found is None and (_network_error_showing(page) or not searched):
+            if _click_refresh(page):
+                print("          [剧集] 点了下拉里的「刷新」", flush=True)
+                page.wait_for_timeout(3000)
+                _type_search(page, want)
+                found = _wait_row_settled(page, want, finder=_series_option_row)
+
+        # 平台直说「未找到剧集」：这是数据问题不是定位问题，别再点了
+        if found is None and _series_not_found_showing(page):
             raise ValueError(
                 f"这个广告账号的「剧集」列表里没有《{want}》。\n"
                 "下拉里平台的原话是「未找到剧集 —— 请先在 TikTok 短剧创作者平台创建剧集，"
                 "然后返回此处并刷新」。\n"
-                "也就是说这不是程序没点到，是这个账号下确实还没有这部剧。\n"
-                "要么先去短剧创作者平台把它建出来，要么把表里的计划名换成这个账号里"
-                "已有的剧（剧名取的是计划名开头那一段）。"
+                "注意剧集列表是【跟着身份变的】，先确认表里 Identity_drama 那一列"
+                "填的是拥有这部剧的那个身份。"
             )
-        print(f"          [剧集] 第{attempt + 1}轮：{how}，搜索={'有' if searched else '无'}，"
-              f"列表里出现「{want}」={bool(found)}", flush=True)
 
-        if found is not None and _click_row_containing(
-                page, want, exclude_texts=(SERIES_PLACEHOLDER, SERIES_FIELD_TITLE)):
-            page.wait_for_timeout(1200)
-            _close_dropdown_if_open(page)
+        print(f"          [剧集] 第{attempt + 1}轮：{how}，搜索={'有' if searched else '无'}，"
+              f"列表里出现「{want}」={found is not None}", flush=True)
+
+        if found is not None and _click_row_containing(page, want, found=found):
+            page.wait_for_timeout(1500)
             if wait_until(page, picked, timeout_seconds=15):
                 print(f"          [剧集] 已选中「{want}」", flush=True)
                 return
-        print(f"          [剧集] 第{attempt + 1}轮没选上"
-              f"（下拉还开着={_visible_search_input(page) is not None}）", flush=True)
+
+        # 失败时把现场截下来。选剧集这一步坑最多（下拉盖在优化位置上面、
+        # 列表跟着身份变、还会重排），光看日志猜不出点到哪儿去了。
+        try:
+            from src.config import LOGS_DIR
+
+            shot = LOGS_DIR / f"episode_series_FAIL_{attempt + 1}.png"
+            page.screenshot(path=str(shot))
+            print(f"          [剧集] 现场截图: {shot}", flush=True)
+            print(f"          [剧集] 当前 URL: {page.url[:110]}", flush=True)
+        except Exception:
+            pass
+
+        # 使用者说的：关掉、等五秒、再刷新重来
+        print(f"          [剧集] 第{attempt + 1}轮没选上，关掉下拉等 5 秒再重开", flush=True)
         try:
             page.keyboard.press("Escape")
         except Exception:
             pass
-        page.wait_for_timeout(800)
+        page.wait_for_timeout(5000)
 
     raise ValueError(
-        f"选剧集「{want}」失败：点了 3 轮，搜索也搜过了。"
-        "确认这个剧名和后台列表里显示的完全一致（列表里每行是「剧名 + N 视频 · 时长」）。"
+        f"选剧集「{want}」失败：关掉重开搜了 4 轮都没选上。\n"
+        f"「剧集」字段还在吗: {series_field_present(page)}；"
+        f"下拉还开着吗: {_visible_search_input(page) is not None}\n"
+        "剧集列表是跟着身份变的 —— 确认表里 Identity_drama 填的是拥有这部剧的身份。"
     )
 
 
@@ -1101,6 +1195,18 @@ def fill_adgroup_core(page, rec, identity_name, series_name, region_pairs):
         warnings.append(f"选身份失败（不影响其它步骤）: {str(e).splitlines()[0][:160]}")
 
     # ---- 剧集 ----（这个是关键项，选不上必须停）
+    #
+    # 选完身份【必须先等它安定】再碰剧集：剧集列表是【跟着身份变的】——
+    # 身份是 DreamStarComicTheater 时列表是一批日文剧，换成 WeShorts_US 才是
+    # 要投的那批英文剧。也就是说选完身份平台会重新拉一次剧集列表。
+    # 不等的话，搜索会和这次重新加载撞上：行确实出现过（旧列表或加载中间态），
+    # 点下去却已经被替换掉了，于是「点了但没选上」，连着 3 轮都这样。
+    # 同一个探针改成选完身份等 2.5 秒就一次成功 —— 这里用等位置站稳，
+    # 比固定 sleep 靠得住。
+    if not wait_fields_settled(page):
+        warnings.append("选完身份之后「剧集」字段一直没安定下来，选剧集可能失败")
+    page.wait_for_timeout(1500)
+
     select_series_episode(page, series_name)
 
     # ---- 选择价值类型 = 广告收入价值 ----
