@@ -492,6 +492,8 @@ def select_optimization_location_episode(page, timeout_seconds=90):
 # ---------------------------------------------------------------------------
 
 IDENTITY_FIELD_TITLE = "身份"
+# 广告层那个身份的字段标题不一样（而且是【另一个东西】，见 builder 的说明）
+IDENTITY_AD_FIELD_TITLE = "身份（TikTok 账号）"
 SERIES_FIELD_TITLE = "剧集"
 SERIES_PLACEHOLDER = "选择剧集"
 
@@ -509,7 +511,10 @@ def _mark_field_js(title):
                || sec.querySelector('[data-testid="lego-hybrid-section-item-header"]');
         if (!h) continue;
         const t = (h.innerText || '').replace('共享设置', '').trim();
-        if (t !== %s) continue;
+        // 先精确，再退到「以它开头」—— 广告层的身份标题后面还跟着一行
+        // 「选择你希望接收私信的账号。」，精确匹配会漏掉
+        const want = %s;
+        if (t !== want && !t.startsWith(want)) continue;
         const r = sec.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0) continue;
         sec.setAttribute('data-ep-fld', '1');
@@ -964,7 +969,8 @@ def _click_refresh(page):
         return False
 
 
-def select_identity_episode(page, identity_name, timeout_seconds=60):
+def select_identity_episode(page, identity_name, timeout_seconds=60,
+                            title=IDENTITY_FIELD_TITLE):
     """选身份。
 
     使用者口述：点身份下面那个【写了身份名字】的框，出现列表（带「按账号名搜索」
@@ -977,14 +983,14 @@ def select_identity_episode(page, identity_name, timeout_seconds=60):
     if not want:
         return "表格没给身份，跳过"
 
-    cur = _field_value(page, IDENTITY_FIELD_TITLE)
+    cur = _field_value(page, title)
     if cur and want.lower() in cur.lower():
         return f"身份已经是「{cur}」，不用改"
 
     for attempt in range(3):
-        box, fld = _field_box(page, IDENTITY_FIELD_TITLE)
+        box, fld = _field_box(page, title)
         if box is None:
-            print(f"          [身份] 第{attempt + 1}轮：没找到「身份」字段", flush=True)
+            print(f"          [身份] 第{attempt + 1}轮：没找到「{title}」字段", flush=True)
             page.wait_for_timeout(1500)
             continue
         if not on_screen(page, box):
@@ -1004,10 +1010,10 @@ def select_identity_episode(page, identity_name, timeout_seconds=60):
               flush=True)
 
         # 排掉收起态那个框里的同名文字（点它只会把下拉关掉）
-        if _click_row_containing(page, want, exclude_texts=(IDENTITY_FIELD_TITLE,)):
+        if _click_row_containing(page, want, exclude_texts=(title,)):
             page.wait_for_timeout(1200)
             _close_dropdown_if_open(page)
-            if wait_until(page, lambda: _picked_by_locator(page, want, IDENTITY_FIELD_TITLE),
+            if wait_until(page, lambda: _picked_by_locator(page, want, title),
                           timeout_seconds=12):
                 print(f"          [身份] 已选中「{want}」", flush=True)
                 return None

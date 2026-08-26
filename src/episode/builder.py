@@ -30,6 +30,7 @@ from src.pages.ad_page import (
 )
 from src.pages.adgroup_page import wait_adgroup_page_ready
 from src.pages.campaign_page import (
+    add_new_ad_group,
     continue_step,
     fill_campaign_details,
     publish_all,
@@ -37,7 +38,6 @@ from src.pages.campaign_page import (
     start_new_campaign,
 )
 from src.pages.duplicate import duplicate_ad_n_times
-from src.pages.step_flow import walk_and_fill_ads
 from src.episode.pages.adgroup_page import fill_adgroup_core
 from src.region_lookup import resolve_regions
 
@@ -87,19 +87,31 @@ def _identity_from(rec, cols, what):
     return "", f"表格里没有{what}的身份（列 {' / '.join(cols)} 都是空的），这一项会跳过"
 
 
-def _extra_copies_for(rows):
-    """一个计划要额外复制几个广告组。
+# 一个广告组里要建几个【广告】。这一列由人手填，叫法不固定，所以多认几种写法 ——
+# excel_loader 会把不在它名单里的列【整列丢掉】，名字对不上就等于这一列不存在。
+# 和商品库那边用的是同一组键名。
+_AD_COUNT_KEYS = ("Ad Number", "Ads Number", "Ad Name Number", "ad_number", "广告数量")
 
-    使用者：「这个表格是每一行相当于一个广告组」。所以同一个 Campaign Name 下
-    有 N 行就是 N 个广告组，第 2 个起用【复制】生成（使用者描述的就是复制：
-    光标放上去出现 + 号、点它），复制出来的副本继承广告组层的全部设置，
-    只有素材是空的 —— 这正是「每个广告组素材不同」要的效果。
 
-    注意一个后果：第 2 行起【只有素材不同】，文案和广告组层设置都继承第 1 行的，
-    那几行自己的 ads_text / Ad Group Name 不会被用上。目前表里各行这些值本来就
-    一样，所以没影响；真要每行文案不同，就得改成逐行新建广告组而不是复制。
+def _ad_count_for(rec):
+    """这一行（= 这一个广告组）里要建几个广告。空或 <1 当作 1。
+
+    结构是使用者用截图定下来的：复制出来的 5 个广告【都在同一个广告组下】。
+    所以：
+        表格一行  = 一个广告组
+        Ad Number = 这个广告组里建几个广告，第 2 个起用【复制广告】生成
+    我一开始按「N 行 = N 个广告组、第 2 个起靠复制」写，那是错的 ——
+    复制的是广告不是广告组，两者不是一回事。
     """
-    return max(0, len(rows) - 1)
+    for k in _AD_COUNT_KEYS:
+        v = rec.get(k)
+        if v in (None, ""):
+            continue
+        try:
+            return max(1, int(float(str(v).strip())))
+        except (TypeError, ValueError):
+            continue
+    return 1
 
 
 def _creative_count_for(rec):
@@ -121,10 +133,31 @@ def fill_ad_identity_and_copy(page, rec, identity_name):
     """
     issue = None
     if identity_name:
-        try:
-            select_identity(page, identity_name)
-        except Exception as e:
-            issue = f"广告层选身份失败（不影响其它步骤）: {str(e).splitlines()[0][:120]}"
+        # 用小游戏那个 select_identity，不用本模块广告组层那个。
+        #
+        # 理由是真机观察出来的：没加复制功能时，小游戏这个在广告层是【选上了】的
+        # （使用者也确认「你之前没操作复制功能的时候我看你还选上了」）。
+        # 我一度改成本模块的选择器，结果它按字段标题「身份（TikTok 账号）」找不到 ——
+        # 探针实测广告层那个标题就是「身份」两个字，我的标题写错了。
+        # 与其在这儿再赌一个标题，不如用已经在广告层跑通过的那一个。
+        #
+        # 加重试：探针里打开下拉后 WeShorts_US 是可见的（匹配4 可见3），
+        # 说明账号在列表里，失败多半是列表还没加载完就判了。
+        last = None
+        for k in range(3):
+            try:
+                select_identity(page, identity_name)
+                last = None
+                break
+            except Exception as e:
+                last = e
+                if k < 2:
+                    print(f"        [广告层身份] 第{k + 1}次没选上，等 5 秒重试",
+                          flush=True)
+                    page.wait_for_timeout(5000)
+        if last is not None:
+            issue = (f"广告层选身份失败（不影响其它步骤）: "
+                     f"{str(last).splitlines()[0][:140]}")
 
     fill_ad_copy(page, str(rec["ads_text"]))
     return issue
@@ -222,18 +255,31 @@ def _build_row_ads(page, rec, advertiser_id, series_name, identity_name,
               flush=True)
         duplicate_ad_n_times(page, extra_copies)
 
-    # ③ 沿「继续」逐个只挑素材
-    def fill_one(index):
+    # ③ 逐个挑素材，中间用「继续」跳到同一个广告组里的下一个广告
+    #
+    # 这里【不能】用 step_flow.walk_and_fill_ads。那个走链器是为
+    # 「广告组层 → 广告层 → 广告组层 → …」那种交替链条写的，靠【层级变化】
+    # 判断有没有走动。而这个模式复制的是广告，3 个广告都在【同一个广告组】里，
+    # 每一站都是广告层 —— 它分不清「跳到了下一个广告」和「压根没动」，
+    # 真机上就报「点了继续但 90 秒内层级没变」，然后判定链条走完，只填了 1 个。
+    #
+    # 改用商品库那边验证过的写法：知道要填几个，就老老实实循环几次，
+    # 不是最后一个就点「继续」+ 等广告页就绪。最后一个没有「继续」只有「全部发布」。
+    filled = 0
+    for k in range(total_ads):
         got = fill_ad_creatives(
             page, rec, advertiser_id, series_name, creative_usage, patient=True
         )
-        return f"[{tag} 第{index + 1}个广告] {got}" if got else None
+        if got:
+            warnings.append(f"[{tag} 第{k + 1}/{total_ads}个广告] {got}")
+        filled += 1
 
-    filled, chain_warnings = walk_and_fill_ads(
-        page, fill_one, expected_ads=total_ads,
-        log=lambda m: print(m, flush=True),
-    )
-    warnings.extend(chain_warnings)
+        if k < total_ads - 1:
+            print(f"      [广告层] 第{k + 1}/{total_ads}个填完，点「继续」跳下一个广告",
+                  flush=True)
+            continue_step(page)
+            wait_ad_page_ready(page)
+            page.wait_for_timeout(1500)
 
     # 收尾截一张广告层的图。这一步默认是要真发布的，发之前能有一张
     # 「程序最后看到的样子」可以对，比只有一行日志强得多。
@@ -280,15 +326,14 @@ def build_episode_campaign(page, advertiser_id, campaign_name, budget, rows,
         continue_step(page)
         wait_adgroup_page_ready(page)
 
-        # N 行 = N 个广告组；第 2 个起用复制生成，所以这里只走第 1 行，
-        # 其余的由广告层那一步一次性复制出来。
-        extra_copies = _extra_copies_for(rows)
-        if extra_copies:
-            print(f"      表里这个计划有 {len(rows)} 行 = {len(rows)} 个广告组，"
-                  f"第 2 个起用复制生成", flush=True)
-
-        for i, rec in enumerate(rows[:1]):
+        # 每一行 = 一个广告组。第 2 个广告组起用计划左侧的「+」新建
+        # （不是复制 —— 复制的是广告层，见 _ad_count_for）。
+        for i, rec in enumerate(rows):
             tag = rec["Ad Group Name"]
+            if i > 0:
+                print(f"      从计划里新建第 {i + 1} 个广告组…", flush=True)
+                add_new_ad_group(page, campaign_name)
+                wait_adgroup_page_ready(page)
 
             # 两个身份分开取：广告组层用 Identity_drama，广告层用 Identity_accoount
             ident_adgroup, w1 = _identity_from(
@@ -315,9 +360,13 @@ def build_episode_campaign(page, advertiser_id, campaign_name, budget, rows,
             wait_ad_page_ready(page)
 
             # ---- 广告层 ----
+            ad_count = _ad_count_for(rec)
+            if ad_count > 1:
+                print(f"      这个广告组要建 {ad_count} 个广告"
+                      f"（第 2 个起用复制广告生成，每个挑不同素材）", flush=True)
             filled, total_ads = _build_row_ads(
                 page, rec, advertiser_id, series_name, ident_ad,
-                creative_usage, extra_copies, warnings,
+                creative_usage, ad_count - 1, warnings,
             )
             if filled < total_ads:
                 # 有广告是空的就别发布 —— 发出去也会失败，还不如把草稿留着让人去看。
