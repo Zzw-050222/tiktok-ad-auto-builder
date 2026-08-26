@@ -30,7 +30,6 @@ from src.pages.ad_page import (
 )
 from src.pages.adgroup_page import wait_adgroup_page_ready
 from src.pages.campaign_page import (
-    add_new_ad_group,
     continue_step,
     fill_campaign_details,
     publish_all,
@@ -40,7 +39,6 @@ from src.pages.campaign_page import (
 from src.pages.duplicate import duplicate_ad_group_n_times
 from src.pages.step_flow import walk_and_fill_ads
 from src.episode.pages.adgroup_page import fill_adgroup_core
-from src.identity_lookup import identity_file_exists, resolve_identity
 from src.region_lookup import resolve_regions
 
 
@@ -72,30 +70,36 @@ def series_name_for(campaign_name, name_to_id=None):
         )
 
 
-def _identity_name_for(rec):
-    """表格里的 Identity_ID -> TikTok 上显示的账号名。返回 (名字, 警告或 None)。"""
-    ident = str(rec.get("Identity_ID") or "").strip()
-    if not ident:
-        return "", None
-    if not identity_file_exists():
-        return "", (
-            "这台电脑上没有身份对照表 Identity_id.xlsx，身份这一项会跳过。"
-            "在网页第 3 步上传一份就行。"
-        )
-    handle = resolve_identity(ident)
-    if not handle:
-        return "", f"Identity_ID {ident!r} 在身份对照表里找不到对应名字"
-    return handle, None
+# 广告组层和广告层的身份是【两个不同的东西】（使用者明确说的），所以是两列。
+# 列里存的直接就是【身份名字】（表里是 WeShorts_US），不是 Identity_ID，
+# 所以【不用】查 Identity_id.xlsx —— 小游戏那边才需要那张对照表。
+_IDENTITY_ADGROUP_COLS = ("Identity_drama",)
+# accoount 是使用者表里的实际拼写（多一个 o）；正确拼写也认，免得哪天改回来就读不到了
+_IDENTITY_AD_COLS = ("Identity_accoount", "Identity_account")
 
 
-def _extra_copies_for(rec):
-    """这一行要额外复制几个广告组。"""
-    val = rec.get("Ad Group Name Number")
-    try:
-        n = int(float(str(val).strip()))
-    except (TypeError, ValueError):
-        return 0
-    return max(0, n)
+def _identity_from(rec, cols, what):
+    """从这几列里取身份名字。返回 (名字, 警告或 None)。"""
+    for c in cols:
+        v = str(rec.get(c) or "").strip()
+        if v:
+            return v, None
+    return "", f"表格里没有{what}的身份（列 {' / '.join(cols)} 都是空的），这一项会跳过"
+
+
+def _extra_copies_for(rows):
+    """一个计划要额外复制几个广告组。
+
+    使用者：「这个表格是每一行相当于一个广告组」。所以同一个 Campaign Name 下
+    有 N 行就是 N 个广告组，第 2 个起用【复制】生成（使用者描述的就是复制：
+    光标放上去出现 + 号、点它），复制出来的副本继承广告组层的全部设置，
+    只有素材是空的 —— 这正是「每个广告组素材不同」要的效果。
+
+    注意一个后果：第 2 行起【只有素材不同】，文案和广告组层设置都继承第 1 行的，
+    那几行自己的 ads_text / Ad Group Name 不会被用上。目前表里各行这些值本来就
+    一样，所以没影响；真要每行文案不同，就得改成逐行新建广告组而不是复制。
+    """
+    return max(0, len(rows) - 1)
 
 
 def _creative_count_for(rec):
@@ -246,16 +250,23 @@ def build_episode_campaign(page, advertiser_id, campaign_name, budget, rows,
         continue_step(page)
         wait_adgroup_page_ready(page)
 
-        for i, rec in enumerate(rows):
-            tag = rec["Ad Group Name"]
-            if i > 0:
-                print(f"      从计划里新建第 {i + 1} 个广告组…", flush=True)
-                add_new_ad_group(page, campaign_name)
-                wait_adgroup_page_ready(page)
+        # N 行 = N 个广告组；第 2 个起用复制生成，所以这里只走第 1 行，
+        # 其余的由广告层那一步一次性复制出来。
+        extra_copies = _extra_copies_for(rows)
+        if extra_copies:
+            print(f"      表里这个计划有 {len(rows)} 行 = {len(rows)} 个广告组，"
+                  f"第 2 个起用复制生成", flush=True)
 
-            identity_name, id_warn = _identity_name_for(rec)
-            if id_warn:
-                warnings.append(f"[{tag}] {id_warn}")
+        for i, rec in enumerate(rows[:1]):
+            tag = rec["Ad Group Name"]
+
+            # 两个身份分开取：广告组层用 Identity_drama，广告层用 Identity_accoount
+            ident_adgroup, w1 = _identity_from(
+                rec, _IDENTITY_ADGROUP_COLS, "广告组层")
+            ident_ad, w2 = _identity_from(rec, _IDENTITY_AD_COLS, "广告层")
+            for w in (w1, w2):
+                if w:
+                    warnings.append(f"[{tag}] {w}")
 
             region_pairs, missing = resolve_regions(str(rec["Region"]).strip())
             for rid in missing:
@@ -267,7 +278,7 @@ def build_episode_campaign(page, advertiser_id, campaign_name, budget, rows,
 
             # ---- 广告组层 ----
             warnings.extend(
-                fill_adgroup_core(page, rec, identity_name, series_name, region_pairs)
+                fill_adgroup_core(page, rec, ident_adgroup, series_name, region_pairs)
             )
 
             continue_step(page)
@@ -275,8 +286,8 @@ def build_episode_campaign(page, advertiser_id, campaign_name, budget, rows,
 
             # ---- 广告层 ----
             filled, total_ads = _build_row_ads(
-                page, rec, advertiser_id, series_name, identity_name,
-                creative_usage, _extra_copies_for(rec), warnings,
+                page, rec, advertiser_id, series_name, ident_ad,
+                creative_usage, extra_copies, warnings,
             )
             if filled < total_ads:
                 # 有广告是空的就别发布 —— 发出去也会失败，还不如把草稿留着让人去看。

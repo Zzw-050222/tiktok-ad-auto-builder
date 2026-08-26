@@ -1,16 +1,16 @@
 """短剧端计划的路径常量。
 
-和 drama 一样，只覆盖「浏览器身份目录」这一项，其余（地区表、身份表、日志目录）
-沿用 src/config.py。
+浏览器登录态【和商品库共用】。
 
-单独一个 profile 的理由和 drama 相同：三个模式可能对着不同 Business Center 的
-广告主，共用一个登录态会互相顶掉（换账号会把另一边的登录态覆盖）。
-如果后面确认短剧端计划和商品库用的是同一个 BC、想省一次登录，
-把下面这一行改成指向 DRAMA_BROWSER_PROFILE_DIR 就行，别的都不用动。
+为什么共用而不是各开一份：实测两个模式对着的是同一个 Business Center
+（都是 TT-We Shorts 那家），用商品库的登录态去开端计划测试表里那个广告主
+（7654589605936693269）是通的。共用就少让使用者登一次账号。
+
+要是以后端计划换到别的 BC，把下面这一行改成
+    EPISODE_BROWSER_PROFILE_DIR = PROJECT_ROOT / "browser_profile_episode"
+就变回独立登录态，别的都不用动。
 """
 
-from src.config import PROJECT_ROOT
+from src.drama.config import DRAMA_BROWSER_PROFILE_DIR
 
-EPISODE_BROWSER_PROFILE_DIR = PROJECT_ROOT / "browser_profile_episode"
-
-EPISODE_BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+EPISODE_BROWSER_PROFILE_DIR = DRAMA_BROWSER_PROFILE_DIR

@@ -178,13 +178,16 @@ def displayed_option(page):
 
 
 def already_episode(page):
-    """已经是「剧集」了吗。
+    """已经是「剧集」了吗。读不出来返回 None。
 
-    展开状态下【不作判断】返回 None —— 那时候三个选项名都在页面上，
-    靠读文字判断一定会误判。这种情况交给调用方去读那三个圆圈的选中状态。
+    展开状态下【绝不能读文字】：三个选项名那时都在页面上，
+    _current_value 会把第一个选项名（小游戏）当成当前值返回——
+    第一次真机跑的报错信息里「当前值: '小游戏'」就是这么来的，完全是假的。
+    展开时唯一可信的是单选圈自己的状态（在 shadow DOM 里）。
     """
     if _options_expanded(page):
-        return None
+        return None if selected_option(page) is None else (
+            selected_option(page) == OPT_EPISODE)
     val = _current_value(page)
     if val is None:
         return None
@@ -291,58 +294,129 @@ def _open_options(page, tries=3):
     return _options_expanded(page)
 
 
-def _option_radio(page, name):
-    """给定选项名，找到它那一行左边的小圆圈。
+# 三个选项的真实结构（2026-08-26 真机探针实测，不是猜的）：
+#
+#   <div class="lego-hybrid-section-item__interactive__...">
+#     <ks-radio-group-1-1-23 class="KsRadioGroup">
+#       <ks-radio-1-1-23 role="radio" class="KsRadio" style="cursor:pointer">   ← 一行=一个选项
+#         #shadow-root
+#           <div class="radio radio--size-md radio--checked ...">              ← 选中标记在这里
+#             <div class="radio__control"><input class="radio__display" type="radio">
+#         <span slot="description">让受众发现并观看剧集中的单集内容。</span>
+#
+# 三条实测出来的要害：
+#
+#  1) 选中状态【只存在 shadow DOM 里】——宿主 ks-radio 上的属性点前点后一模一样，
+#     没有 aria-checked、没有 is-checked、什么都没有。所以共用的 is_selected
+#     （读宿主属性那套）在这里【永远读不出来】，必须进 shadowRoot 看 radio--checked。
+#
+#  2) 点【中心】点不上。行是 308x38，中心落在说明文字上；圆圈在最左边，
+#     点 x≈10 才生效。实测点中心之后「优化位置」纹丝不动。
+#
+#  3) 别用「往上找一个祖先再 querySelector('[role=radio]')」——ks-radio 自己
+#     就带 role="radio"，而 querySelector 不会匹配元素自身，于是一路走到
+#     ks-radio-group，再 querySelector 拿到的是【组里第一个】也就是「小游戏」。
+#     第一次真机跑就是这么把小游戏选上的。这和价值类型那次是同一类错误：
+#     宁可往里，不要往外。
+#
+# 另外必须【限定在优化位置这个字段里】找：页面上「排期」那块也有两个 role=radio
+# （持续投放广告组 / 设置开始时间和结束时间），全局找会串。
+_RADIO_SCAN_JS = """
+() => {
+  document.querySelectorAll('[data-ep-r]').forEach(e => e.removeAttribute('data-ep-r'));
+  const secs = document.querySelectorAll(
+    '[data-testid="lego-section-item"],[data-testid="lego-hybrid-section-item"]');
+  for (const sec of secs) {
+    const h = sec.querySelector('[data-testid="lego-section-item-header"]')
+           || sec.querySelector('[data-testid="lego-hybrid-section-item-header"]');
+    if (!h || !(h.innerText || '').trim().startsWith('优化位置')) continue;
+    const out = [];
+    [...sec.querySelectorAll('[role="radio"]')].forEach((n, i) => {
+      const r = n.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return;
+      n.setAttribute('data-ep-r', String(i));
+      const base = n.shadowRoot && n.shadowRoot.querySelector('.radio');
+      out.push({
+        i: String(i),
+        text: (n.innerText || '').replace(/\\s+/g, ' ').trim(),
+        checked: !!(base && (base.className || '').includes('radio--checked')),
+      });
+    });
+    return out;
+  }
+  return null;
+}
+"""
 
-    和商品库那边选剧集同一个套路：文字节点本身往往不是可点的目标，
-    要从文字往上走到「行」，再在行里找圆圈。
-    这里【从说明文字往上找】而不是从选项名往上找——选项名太短且互相包含，
-    说明文字是唯一的。
-    """
-    desc = _OPT_DESCS.get(name)
-    anchor = None
-    if desc:
-        anchor = _first_visible(page.get_by_text(desc, exact=True))
-    if anchor is None:
-        anchor = _first_visible(page.get_by_text(name, exact=True))
-    if anchor is None:
-        return None, None
 
-    js = """
-    el => {
-      document.querySelectorAll('[data-ep-opt]').forEach(
-        e => e.removeAttribute('data-ep-opt'));
-      document.querySelectorAll('[data-ep-radio]').forEach(
-        e => e.removeAttribute('data-ep-radio'));
-      let row = el;
-      for (let k = 0; k < 8 && row; k++) {
-        row = row.parentElement;
-        if (!row) break;
-        const r = row.getBoundingClientRect();
-        if (r.width < 150) continue;
-        // 这一行里得有个单选圈才算找对了行
-        const radio = row.querySelector(
-          '[role="radio"], input[type="radio"], [class*="radio" i], [class*="Radio"]');
-        if (radio) {
-          row.setAttribute('data-ep-opt', '1');
-          radio.setAttribute('data-ep-radio', '1');
-          return true;
-        }
-      }
-      return false;
-    }
+def _radios(page):
+    """优化位置里的三个单选圈：[{i, text, checked}]。没展开就返回空列表。"""
+    try:
+        return page.evaluate(_RADIO_SCAN_JS) or []
+    except Exception:
+        return []
+
+
+def _name_of(text):
+    for name in (OPT_MINIGAME, OPT_DRAMA, OPT_EPISODE):
+        if text.startswith(name):
+            return name
+    return None
+
+
+def selected_option(page):
+    """展开状态下，当前选中的是哪个选项。读不出返回 None。"""
+    for r in _radios(page):
+        if r.get("checked"):
+            return _name_of(r.get("text", ""))
+    return None
+
+
+def _radio_of(page, name):
+    """某个选项那一行的 locator。找不到返回 None。"""
+    for r in _radios(page):
+        if _name_of(r.get("text", "")) == name:
+            loc = page.locator(f'[data-ep-r="{r["i"]}"]')
+            try:
+                return loc.first if loc.count() > 0 else None
+            except Exception:
+                return None
+    return None
+
+
+def _click_radio(page, radio):
+    """点单选圈。必须点最左边那个圈，不能点中心（中心是说明文字，点了没反应）。"""
+    if not on_screen(page, radio):
+        scroll_into_comfortable_view(page, radio, label="剧集选项")
+    try:
+        box = radio.bounding_box()
+    except Exception:
+        box = None
+    y = 19 if not box else min(19, max(6, box["height"] / 2))
+    try:
+        radio.click(timeout=8000, position={"x": 10, "y": y})
+        return "点左侧圆圈"
+    except Exception:
+        pass
+    # 退路：直接点 shadow DOM 里那个 input
+    try:
+        radio.evaluate("""el => {
+          const i = el.shadowRoot && el.shadowRoot.querySelector('input.radio__display');
+          (i || el).click();
+        }""")
+        return "点 shadow 里的 input"
+    except Exception:
+        return "都没点上"
+
+
+def series_field_present(page):
+    """「剧集」这个字段在不在。
+
+    这是选中「剧集」之后的【真实结果】：优化位置选成剧集，页面才会渲染出
+    身份 / 剧集 两个字段（实测 False -> True）。比读任何文字都可靠，
+    所以拿它当验证的主证据。
     """
-    try:
-        ok = anchor.evaluate(js)
-    except Exception:
-        ok = False
-    if not ok:
-        return None, anchor
-    radio = page.locator('[data-ep-radio="1"]')
-    try:
-        return (radio.first if radio.count() > 0 else None), anchor
-    except Exception:
-        return None, anchor
+    return _named_field(page, SERIES_FIELD_TITLE) is not None
 
 
 def select_optimization_location_episode(page, timeout_seconds=90):
@@ -351,13 +425,12 @@ def select_optimization_location_episode(page, timeout_seconds=90):
     顺序（使用者口述）：
         点值右边的铅笔 -> 展开三个选项（不全就往下滑一点）-> 点「剧集」左边的小圆圈
 
-    三条从别处踩出来、这里直接照搬的规矩：
-      * 找元素用 Playwright 定位器（能穿透 shadow DOM），不用 document.querySelectorAll
-      * 图标在 hover 之前可能是 0x0，别拿「有没有尺寸」当「有没有找到」
-      * 验证看【结果】不看【动作】：判据是「剧集」那个圈读出来是选中，
-        而不是「我点过了」
+    验证看【结果】不看【动作】，而且主证据是【「剧集」字段出没出现】：
+    优化位置选成剧集，页面才会渲染出身份/剧集两个字段（真机实测 False -> True）。
+    单选圈自己的选中状态藏在 shadow DOM 里，也读，但只当第二证据 ——
+    读文字是绝对不行的，见 already_episode 的说明。
     """
-    if already_episode(page) is True:
+    if already_episode(page) is True and series_field_present(page):
         print("          [优化位置] 已经是「剧集」，不用改", flush=True)
         return
 
@@ -367,48 +440,44 @@ def select_optimization_location_episode(page, timeout_seconds=90):
             f"但页面上没出现那几句选项说明。\n现场：{_section_debug(page)}"
         )
 
+    print(f"          [优化位置] 展开后当前选中：{selected_option(page)!r}", flush=True)
+
     for attempt in range(3):
-        radio, anchor = _option_radio(page, OPT_EPISODE)
+        radio = _radio_of(page, OPT_EPISODE)
         if radio is None:
-            # 选项展开了但找不到「剧集」那一行 —— 可能是被视口裁掉了（使用者说的
-            # 「显示不完整就滚轮往下滑一点点」），先把说明文字滚进来再找一次。
-            if anchor is not None and not on_screen(page, anchor):
-                scroll_into_comfortable_view(page, anchor, label="剧集选项")
-                page.wait_for_timeout(400)
-                radio, anchor = _option_radio(page, OPT_EPISODE)
-        if radio is None:
-            print(f"          [优化位置] 第{attempt + 1}轮：没找到「{OPT_EPISODE}」那一行的圆圈",
+            print(f"          [优化位置] 第{attempt + 1}轮：没找到「{OPT_EPISODE}」那个圆圈",
                   flush=True)
             page.wait_for_timeout(1200)
             continue
 
-        state = is_selected(radio)
-        if state is True:
+        if selected_option(page) == OPT_EPISODE and series_field_present(page):
             print(f"          [优化位置] 已选中「{OPT_EPISODE}」", flush=True)
             return
-        # state 为 None 表示【读不出】。这时候也点一下：本函数一开始已经确认过
-        # 当前值不是「剧集」，所以点它只会是「选上」，不会把已选的取消掉。
-        if not on_screen(page, radio):
-            scroll_into_comfortable_view(page, radio, label="剧集圆圈")
-        robust_click(page, radio, timeout=6000)
-        page.wait_for_timeout(1200)
+
+        how = _click_radio(page, radio)
+        print(f"          [优化位置] 第{attempt + 1}轮：{how}", flush=True)
+        page.wait_for_timeout(1500)
 
         def picked():
-            r, _ = _option_radio(page, OPT_EPISODE)
-            if r is not None and is_selected(r) is True:
+            # 主证据：选对了才会冒出「剧集」这个字段
+            if series_field_present(page):
                 return True
-            # 选完平台可能把三个选项收起来，只剩值 —— 那就看值
-            return already_episode(page) is True
+            # 第二证据：圆圈自己的状态（shadow DOM 里的 radio--checked）
+            return selected_option(page) == OPT_EPISODE
 
-        if wait_until(page, picked, timeout_seconds=15):
-            print(f"          [优化位置] 已选中「{OPT_EPISODE}」", flush=True)
+        if wait_until(page, picked, timeout_seconds=20):
+            print(f"          [优化位置] 已选中「{OPT_EPISODE}」"
+                  f"（剧集字段已出现={series_field_present(page)}）", flush=True)
             return
-        print(f"          [优化位置] 第{attempt + 1}轮：点完还是没选上", flush=True)
+        print(f"          [优化位置] 第{attempt + 1}轮点完还是没选上，"
+              f"当前选中={selected_option(page)!r}", flush=True)
 
     raise ValueError(
         f"把「优化位置」改成「{OPT_EPISODE}」失败：三个选项已经展开，"
         f"但点了 3 轮「{OPT_EPISODE}」的圆圈都没选上。\n"
-        f"当前值: {_current_value(page)!r}\n现场：{_section_debug(page)}"
+        f"当前选中: {selected_option(page)!r}；「剧集」字段出现了吗: "
+        f"{series_field_present(page)}\n"
+        f"三个圆圈现在的状态: {_radios(page)}"
     )
 
 
@@ -660,6 +729,15 @@ el => {
   const walk = (n) => {
     if (!n) return;
     if (n.nodeType === 3) { out += n.textContent + ' '; return; }
+    // ShadowRoot / DocumentFragment 是 nodeType 11。
+    // 原来这里只有 `if (n.nodeType !== 1) return;`，于是下面 walk(n.shadowRoot)
+    // 传进来的 shadow root 一进门就被弹回去 —— shadow DOM 里的内容一个字都读不到。
+    // 后果：ks-select 的值（身份、剧集都在 shadow 里）永远读成 None，
+    // 明明选上了也判成没选上，然后一轮轮重试，反而把前面选好的东西点乱。
+    if (n.nodeType === 11) {
+      for (const c of n.childNodes || []) walk(c);
+      return;
+    }
     if (n.nodeType !== 1) return;
     const st = getComputedStyle(n);
     if (st.position === 'absolute' || st.position === 'fixed') return;  // 展开的下拉
@@ -714,6 +792,108 @@ def _close_dropdown_if_open(page):
     return False
 
 
+# 下拉搜完之后，平台明确告诉你「这个账号里没有这部剧」时的文案。
+_SERIES_EMPTY_MARKERS = ("未找到剧集", "短剧创作者平台")
+
+
+def _series_not_found_showing(page):
+    """下拉里是不是明明白白写着「未找到剧集」。"""
+    for m in _SERIES_EMPTY_MARKERS:
+        if _first_visible(page.get_by_text(m, exact=False)) is not None:
+            return True
+    return False
+
+
+def _option_row_visible(page, want):
+    """下拉列表里【真的有】叫这个名字的选项行吗。
+
+    必须排掉搜索框自己 —— 我刚把剧名敲进搜索框，那几个字当然在页面上；
+    第一版就是拿 get_by_text(剧名) 直接判断，于是搜出「未找到剧集」的时候
+    照样报「列表里出现=True」，然后去点一个不存在的行，点歪到下拉底下的
+    优化位置单选圈上，把刚选好的「剧集」又改回去了
+    （日志里「第2轮：没找到「剧集」字段」就是这么来的）。
+    """
+    loc = page.get_by_text(str(want), exact=False)
+    try:
+        n = loc.count()
+    except Exception:
+        return None
+    for i in range(min(n, 20)):
+        el = loc.nth(i)
+        try:
+            if not el.is_visible():
+                continue
+            bad = el.evaluate("""el => {
+              const tag = el.tagName.toLowerCase();
+              if (tag === 'input' || tag === 'textarea') return true;
+              if (el.closest && el.closest('input,textarea')) return true;
+              // 搜索框那一层（自己或祖先带 placeholder）也要排掉
+              let n = el;
+              for (let k = 0; k < 4 && n; k++) {
+                if (n.getAttribute && n.getAttribute('placeholder')) return true;
+                n = n.parentElement;
+              }
+              return false;
+            }""")
+            if not bad:
+                return el
+        except Exception:
+            continue
+    return None
+
+
+def _picked_by_locator(page, want, title):
+    """选中了没 —— 只用 Playwright 定位器判断，而且【限定在那个字段里面找】。
+
+    为什么不读字段文字：这两个框是 ks-select，显示值在 shadow DOM 里，
+    我写的那个「读字段值」的 JS 一直读成 None（试过修 nodeType 11 那一处，
+    还是读不出来），于是明明选上了也判成失败、一轮轮重试，反而把前面选好的
+    东西点乱（真机日志里「第2轮：没找到「剧集」字段」就是被自己retry搞没的）。
+
+    换成一个不依赖读值的判据，两条同时成立才算数：
+      ① 下拉关上了（搜索框不见了）
+      ② 页面上还能看到这个名字 —— 此时它只可能在【收起的框】里
+    选之前：名字只在展开的下拉里（①不成立）；
+    没选中：下拉关了但框里是别的名字（②不成立）。两种都能正确判负。
+
+    Playwright 的定位器能穿透 shadow DOM，这是这个项目一开始就记下来的
+    （「找元素一律用定位器，不要用 document.querySelectorAll」）。
+    """
+    if _visible_search_input(page) is not None:
+        return False
+    fld = _named_field(page, title)
+    if fld is None:
+        return False
+    # 【必须限定在字段内】。第一版是全页面找这个名字，结果剧集那边直接假阳性：
+    # 剧名同时出现在计划名和广告组名里（计划就叫「The Don's Secret Heir-zzw-...」），
+    # 于是一开始就判成「已经选好了，不用改」，整个选剧集的步骤被跳过。
+    # locator 链式调用同样能穿透 shadow DOM，所以限定作用域不会漏掉 ks-select 的显示值。
+    try:
+        return _first_visible(fld.get_by_text(str(want), exact=False)) is not None
+    except Exception:
+        return False
+
+
+def _network_error_showing(page):
+    """页面上有没有「网络错误。请稍后重试。」那个提示。"""
+    try:
+        return _first_visible(page.get_by_text("网络错误", exact=False)) is not None
+    except Exception:
+        return False
+
+
+def _click_refresh(page):
+    """点下拉底部那个「刷新」按钮。"""
+    btn = _first_visible(page.get_by_text("刷新", exact=True))
+    if btn is None:
+        return False
+    try:
+        robust_click(page, btn, timeout=5000)
+        return True
+    except Exception:
+        return False
+
+
 def select_identity_episode(page, identity_name, timeout_seconds=60):
     """选身份。
 
@@ -742,21 +922,31 @@ def select_identity_episode(page, identity_name, timeout_seconds=60):
         how = _click_box(page, box)
         page.wait_for_timeout(900)
 
-        # 搜一下更稳：商务中心共享的账号可能有很多，列表里不一定一眼就有
-        searched = _type_search(page, want)
-        print(f"          [身份] 第{attempt + 1}轮：{how}，搜索框={'有' if searched else '无'}",
+        # 【不要搜索】。真机实测：往「按账号名搜索」里输入显示名（WeShorts_US）
+        # 会把三行全过滤掉，一个都不剩 —— 它多半是按下面那行小写的 handle
+        # （weshorts_us）匹配的。不搜的时候三行好好地列在那儿。
+        # 小游戏那边的身份选择器注释里早就写了同一件事：
+        # 「只有几个身份共享给这个账号，不用搜，直接点匹配的那一个」。
+        #
+        # 列表是异步加载的，等它把那一行渲染出来再点，别一开就点。
+        got = wait_until(
+            page,
+            lambda: _first_visible(page.get_by_text(want, exact=False)) is not None,
+            timeout_seconds=20,
+        )
+        print(f"          [身份] 第{attempt + 1}轮：{how}，列表里出现「{want}」={bool(got)}",
               flush=True)
 
         # 排掉收起态那个框里的同名文字（点它只会把下拉关掉）
         if _click_row_containing(page, want, exclude_texts=(IDENTITY_FIELD_TITLE,)):
             page.wait_for_timeout(1200)
             _close_dropdown_if_open(page)
-            cur = _field_value(page, IDENTITY_FIELD_TITLE)
-            if cur and want.lower() in cur.lower():
-                print(f"          [身份] 已选中「{cur}」", flush=True)
+            if wait_until(page, lambda: _picked_by_locator(page, want, IDENTITY_FIELD_TITLE),
+                          timeout_seconds=12):
+                print(f"          [身份] 已选中「{want}」", flush=True)
                 return None
-        print(f"          [身份] 第{attempt + 1}轮没选上，当前值={_field_value(page, IDENTITY_FIELD_TITLE)!r}",
-              flush=True)
+        print(f"          [身份] 第{attempt + 1}轮没选上"
+              f"（下拉还开着={_visible_search_input(page) is not None}）", flush=True)
         try:
             page.keyboard.press("Escape")
         except Exception:
@@ -764,7 +954,7 @@ def select_identity_episode(page, identity_name, timeout_seconds=60):
         page.wait_for_timeout(800)
 
     raise ValueError(
-        f"选身份「{want}」失败：点了 3 轮。当前值={_field_value(page, IDENTITY_FIELD_TITLE)!r}。"
+        f"选身份「{want}」失败：点了 3 轮。"
         "如果这个身份不在「由商务中心共享」列表里，需要先在后台把它共享给这个广告账号。"
     )
 
@@ -782,8 +972,7 @@ def select_series_episode(page, series_name, timeout_seconds=90):
         raise ValueError("表格里没给剧集名，没法选剧集")
 
     def picked():
-        val = _field_value(page, SERIES_FIELD_TITLE, strip_words=(SERIES_PLACEHOLDER,))
-        return bool(val and want.lower() in val.lower())
+        return _picked_by_locator(page, want, SERIES_FIELD_TITLE)
 
     if picked():
         print(f"          [剧集] 已经是「{want}」，不用改", flush=True)
@@ -798,23 +987,46 @@ def select_series_episode(page, series_name, timeout_seconds=90):
         if not on_screen(page, box):
             scroll_into_comfortable_view(page, box, label="剧集框")
         how = _click_box(page, box)
-        page.wait_for_timeout(900)
+        page.wait_for_timeout(1500)
 
+        # 剧集列表很长（这个账号里几十上百部），必须靠搜索。
+        # 但列表是异步拉的、还会失败 —— 真机上见过顶部弹「网络错误。请稍后重试。」，
+        # 下拉底部就带着一个「刷新」按钮。所以：搜完等结果，等不到就按刷新再等一轮。
         searched = _type_search(page, want)
-        print(f"          [剧集] 第{attempt + 1}轮：{how}，搜索={'有' if searched else '无'}",
-              flush=True)
+        found = wait_until(
+            page, lambda: _option_row_visible(page, want), timeout_seconds=25)
+        if not found and _network_error_showing(page):
+            print("          [剧集] 列表报了网络错误，点「刷新」再等一轮", flush=True)
+            if _click_refresh(page):
+                page.wait_for_timeout(2500)
+                _type_search(page, want)
+                found = wait_until(
+                    page, lambda: _option_row_visible(page, want), timeout_seconds=25)
 
-        if _click_row_containing(page, want,
-                                 exclude_texts=(SERIES_PLACEHOLDER, SERIES_FIELD_TITLE)):
+        # 平台直说「未找到剧集」的时候，就别再点了 —— 列表是空的，
+        # 再点只会点到下拉底下的东西（优化位置的单选圈就在下面），
+        # 把已经选好的「剧集」改回去。这不是定位问题，是这个账号里没有这部剧。
+        if not found and _series_not_found_showing(page):
+            raise ValueError(
+                f"这个广告账号的「剧集」列表里没有《{want}》。\n"
+                "下拉里平台的原话是「未找到剧集 —— 请先在 TikTok 短剧创作者平台创建剧集，"
+                "然后返回此处并刷新」。\n"
+                "也就是说这不是程序没点到，是这个账号下确实还没有这部剧。\n"
+                "要么先去短剧创作者平台把它建出来，要么把表里的计划名换成这个账号里"
+                "已有的剧（剧名取的是计划名开头那一段）。"
+            )
+        print(f"          [剧集] 第{attempt + 1}轮：{how}，搜索={'有' if searched else '无'}，"
+              f"列表里出现「{want}」={bool(found)}", flush=True)
+
+        if found is not None and _click_row_containing(
+                page, want, exclude_texts=(SERIES_PLACEHOLDER, SERIES_FIELD_TITLE)):
+            page.wait_for_timeout(1200)
+            _close_dropdown_if_open(page)
             if wait_until(page, picked, timeout_seconds=15):
-                _close_dropdown_if_open(page)
-                if picked():
-                    print(f"          [剧集] 已选中「{want}」", flush=True)
-                    return
-                print("          [剧集] 关下拉之后值又没了，重试", flush=True)
-        print(f"          [剧集] 第{attempt + 1}轮没选上，当前值="
-              f"{_field_value(page, SERIES_FIELD_TITLE, strip_words=(SERIES_PLACEHOLDER,))!r}",
-              flush=True)
+                print(f"          [剧集] 已选中「{want}」", flush=True)
+                return
+        print(f"          [剧集] 第{attempt + 1}轮没选上"
+              f"（下拉还开着={_visible_search_input(page) is not None}）", flush=True)
         try:
             page.keyboard.press("Escape")
         except Exception:
@@ -823,7 +1035,6 @@ def select_series_episode(page, series_name, timeout_seconds=90):
 
     raise ValueError(
         f"选剧集「{want}」失败：点了 3 轮，搜索也搜过了。"
-        f"当前值={_field_value(page, SERIES_FIELD_TITLE, strip_words=(SERIES_PLACEHOLDER,))!r}。"
         "确认这个剧名和后台列表里显示的完全一致（列表里每行是「剧名 + N 视频 · 时长」）。"
     )
 

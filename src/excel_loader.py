@@ -53,6 +53,21 @@ OPTIONAL_COLUMNS = [
     "unique_creative",
     "素材不重复",
     "每组素材不同",
+    # ---- 短剧端计划用到的 ----
+    # 广告组层和广告层的身份是【两个不同的东西】，所以是两列，各存一个身份名字
+    # （直接是名字，不是 Identity_ID，不用查身份对照表）。
+    # Identity_accoount 是使用者表里的实际拼写（多了一个 o）；把正确拼写也列上，
+    # 万一以后改回来了不至于整列被丢掉——load_rows 会把不在这个名单里的列
+    # 【整列丢掉】，名字对不上就等于这一列不存在，而且很难发现。
+    "Identity_drama",
+    "Identity_accoount",
+    "Identity_account",
+    # 下面这些短剧端表里有、但程序不读，列在这里只是为了别被静默丢掉时让人困惑
+    "TikTok Account ID",
+    "App Promotion Type",
+    "Catalog ID",
+    "Catalog Product ID",
+    "Schedule_start_time",
 ]
 
 
