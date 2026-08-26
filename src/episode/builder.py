@@ -8,7 +8,7 @@
     广告组层 见 pages/adgroup_page.fill_adgroup_core
              （名称 -> 优化位置=剧集 -> 身份 -> 剧集 -> 价值类型 -> ROAS -> 地域）
     广告层   ① 身份 + 文案（【没有 URL 这个框】，不填）
-             ② 复制广告组（光标放上去出现 + 号，点它）
+             ② 复制【广告】（光标放在广告那一行上出现 + 号，点它）
              ③ 沿「继续」逐个只挑素材
              ④ 全部发布
 
@@ -36,7 +36,7 @@ from src.pages.campaign_page import (
     select_native_growth_objective,
     start_new_campaign,
 )
-from src.pages.duplicate import duplicate_ad_group_n_times
+from src.pages.duplicate import duplicate_ad_n_times
 from src.pages.step_flow import walk_and_fill_ads
 from src.episode.pages.adgroup_page import fill_adgroup_core
 from src.region_lookup import resolve_regions
@@ -147,9 +147,17 @@ def fill_ad_creatives(page, rec, advertiser_id, series_name, creative_usage,
     key = (str(advertiser_id), str(series_name))
     used = creative_usage.setdefault(key, set())
     kwargs = {"batch_wait_seconds": 40, "batch_settle_ms": 3000} if patient else {}
+    # 把这一步的实际结果打出来。商品库那边本来就打，我这边漏了，
+    # 结果第一次真机跑完只看到「✓ 成功」，而截图上创意素材那块还是「自动选择」——
+    # 到底选了几个、去重集合有没有涨，全靠猜。
+    before = len(used)
+    print(f"        [素材] 搜「{series_name}」，要 {count} 个"
+          f"（这个账号+剧目已用过 {before} 个）", flush=True)
     selected, wrapped = select_creative_materials(
         page, series_name, count, used_ids=used, **kwargs
     )
+    print(f"        [素材] 选到 {selected} 个，去重集合 {before} → {len(used)}"
+          f"，绕回头复用={wrapped}", flush=True)
     if selected < count:
         return (
             f"素材库搜索「{series_name}」只选到 {selected}/{count} 个素材"
@@ -193,16 +201,26 @@ def _build_row_ads(page, rec, advertiser_id, series_name, identity_name,
     if issue:
         warnings.append(f"[{tag}] {issue}")
 
-    # ② 再复制。
-    # 复制之前先静置几秒 —— 这一条是小游戏那边实测出来的：复制紧挨在「刚填完」
-    # 后面时，页面可能还在跑自动保存/校验，左侧那一行正在重渲染，
-    # hover 上去点不到复制图标。复制本身用的还是原来那个函数，一个字没改。
+    # ② 再复制 —— 复制的是【广告】，不是广告组。
+    #
+    # 使用者明确纠正过：这个模式要复制的是广告层级，把光标放在【广告】那一行上
+    # 出现 + 号再点，操作细节和复制广告组一样。所以用 duplicate_ad_n_times
+    # （它认的是左侧的 creation_1nn_sidebar_creative_node，TikTok 内部把「广告」
+    # 叫 creative，和广告层的 URL .../create/spc-creative 对得上），
+    # 不是 duplicate_ad_group_n_times。
+    #
+    # 复制完怎么在多个广告之间走：还是点右下角「继续」。商品库那条流程已经验证过
+    # 同一个广告组里的多个广告就是靠「继续」跳的，最后一个没有「继续」只有「发布」。
+    # 所以下面继续用 walk_and_fill_ads，它每到一站先读自己在哪一层，不数点击次数。
+    #
+    # 复制之前先静置几秒 —— 小游戏那边实测出来的：复制紧挨在「刚填完」后面时，
+    # 页面可能还在跑自动保存/校验，左侧那一行正在重渲染，hover 上去点不到复制图标。
     if extra_copies > 0:
         page.wait_for_timeout(3000)
-        print(f"      [广告层] ② 复制 {extra_copies} 个广告组"
+        print(f"      [广告层] ② 复制 {extra_copies} 个【广告】"
               f"（文案会被继承，素材是空的），共 {total_ads} 个广告要挑素材",
               flush=True)
-        duplicate_ad_group_n_times(page, tag, extra_copies)
+        duplicate_ad_n_times(page, extra_copies)
 
     # ③ 沿「继续」逐个只挑素材
     def fill_one(index):
@@ -216,6 +234,18 @@ def _build_row_ads(page, rec, advertiser_id, series_name, identity_name,
         log=lambda m: print(m, flush=True),
     )
     warnings.extend(chain_warnings)
+
+    # 收尾截一张广告层的图。这一步默认是要真发布的，发之前能有一张
+    # 「程序最后看到的样子」可以对，比只有一行日志强得多。
+    try:
+        from src.config import LOGS_DIR
+
+        shot = LOGS_DIR / "episode_ad_layer.png"
+        page.screenshot(path=str(shot))
+        print(f"      [广告层] 收尾截图: {shot}", flush=True)
+    except Exception:
+        pass
+
     return filled, total_ads
 
 
