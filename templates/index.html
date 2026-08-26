@@ -341,6 +341,11 @@
         <div class="mode-name">短剧商品库</div>
         <div class="mode-desc">商品库推广系列 · 按短剧ID关联剧集</div>
       </div>
+      <div class="mode" data-mode="episode">
+        <div class="tick"></div>
+        <div class="mode-name">短剧端计划</div>
+        <div class="mode-desc">计划页同小游戏 · 优化位置选「剧集」</div>
+      </div>
     </div>
   </div>
 
@@ -456,6 +461,15 @@ const MODE_INFO = {
       + `Creative Number（>2 时改为手动搜索挑素材）、`
       + `素材不重复（按行覆盖下面那个开关，填 1/是 或 0/否）`,
   },
+  episode: {
+    cols: `<b>必填列</b>：${REQUIRED}<br>`
+      + `<b>端计划专用</b>：<b>Identity_drama</b>（广告组层的身份名，如 WeShorts_US）、`
+      + `<b>Identity_accoount</b>（广告层的身份名 —— 和上面那个是<b>两个不同的东西</b>）、`
+      + `Ad Number（这个广告组建几个广告，第 2 个起用复制广告生成，每个挑不同素材，默认 1）、`
+      + `Creative Number（每个广告挑几个素材，>2 才手动挑）<br>`
+      + `<b>说明</b>：表格<b>一行 = 一个广告组</b>；剧名取自计划名开头，用来选「剧集」`
+      + `和在素材库搜素材；<b>不需要</b> TT Mini URL（这个页面没有 URL 框）`,
+  },
   drama: {
     cols: `<b>必填列</b>：${REQUIRED}<br><b>可选列</b>：Ad Group Name Number（复制份数）、`
       + `Creative Number（每个广告挑几个素材，默认 1）、`
@@ -473,6 +487,7 @@ let acctTimer = null;
 function renderModeInfo() {
   colsHint.innerHTML = MODE_INFO[mode].cols;
   // 「每组素材不同」只对小游戏有意义：短剧那条流程本来就是逐个广告挑素材的
+  // 「每组素材不同」只对小游戏有意义：另外两条流程本来就是逐个广告挑素材的
   $('uniqueRow').style.display = (mode === 'minigame') ? 'flex' : 'none';
 }
 renderModeInfo();

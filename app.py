@@ -31,6 +31,8 @@ from src.config import (
 )
 from src.drama.builder import build_drama_campaign
 from src.drama.config import DRAMA_BROWSER_PROFILE_DIR
+from src.episode.builder import build_episode_campaign
+from src.episode.config import EPISODE_BROWSER_PROFILE_DIR
 from src.drama.series_lookup import load_series_map, resolve_series_from_campaign_name
 from src.excel_loader import group_by_campaign, load_rows
 from src.identity_lookup import IDENTITY_FILE, identity_file_exists, load_identity_map
@@ -52,6 +54,11 @@ MODES = {
     "drama": {
         "label": "短剧商品库",
         "profile": DRAMA_BROWSER_PROFILE_DIR,
+    },
+    "episode": {
+        "label": "短剧端计划",
+        # 登录态和商品库共用（实测同一个 Business Center，见 episode/config.py）
+        "profile": EPISODE_BROWSER_PROFILE_DIR,
     },
 }
 
@@ -255,8 +262,14 @@ def _run_build(xlsx_path, publish, mode, unique_creatives=False):
 
         profile = MODES[mode]["profile"]
         series_map = None
-        if mode == "drama":
-            series_map, _ = load_series_map()
+        if mode in ("drama", "episode"):
+            try:
+                series_map, _ = load_series_map()
+            except Exception:
+                # 端计划没有剧目对照表也能跑（退回按 '-' 拆计划名首段并警告）；
+                # 商品库那条流程是硬依赖，让它照旧抛出去
+                if mode == "drama":
+                    raise
 
         with sync_playwright() as p:
             context = p.chromium.launch_persistent_context(
@@ -272,7 +285,7 @@ def _run_build(xlsx_path, publish, mode, unique_creatives=False):
             # 先确认登录 + 每个广告主 ID 的权限，再谈别的
             _preflight_access(page, groups, mode)
 
-            if mode == "drama" and records:
+            if mode in ("drama", "episode") and records:
                 # 整套定位都依赖中文文案，界面变英文时每一步都会失败，所以先拦住。
                 # 实测界面会在中英文之间自己来回切，每次跑都要确认。
                 from src.drama.pages.campaign_page import ensure_chinese_ui
@@ -284,7 +297,18 @@ def _run_build(xlsx_path, publish, mode, unique_creatives=False):
                     run_state["current"] = campaign_name
 
                 budget = rows[0]["Budget"]
-                if mode == "drama":
+                if mode == "episode":
+                    result = build_episode_campaign(
+                        page,
+                        str(advertiser_id),
+                        str(campaign_name),
+                        budget,
+                        rows,
+                        publish=publish,
+                        creative_usage=creative_usage,
+                        series_name_map=series_map,
+                    )
+                elif mode == "drama":
                     result = build_drama_campaign(
                         page,
                         str(advertiser_id),
