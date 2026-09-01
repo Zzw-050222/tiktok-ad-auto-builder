@@ -23,23 +23,36 @@ if not exist "requirements.txt" goto :wrongdir
 if not exist "app.py" goto :wrongdir
 echo   [OK] 位置正确
 
-rem --- 2. 检查 Python ---
-python --version >nul 2>nul
-if errorlevel 1 (
+rem --- 2. 找一个能用的 Python ---
+rem 和 macOS 那边同一个理由：不能只赌 python 这一个名字。
+rem Windows 上装了 Python 官方版会带 py 启动器（py -3.12 这种），
+rem 而 PATH 里的 python 可能是别的版本、甚至是应用商店那个占位符。
+rem 所以按新到旧试一遍，挑第一个 >= 3.10 的。
+set PYBIN=
+set PYV=
+for %%c in ("py -3.14" "py -3.13" "py -3.12" "py -3.11" "py -3.10" "py -3" "python" "python3") do (
+  if not defined PYBIN (
+    for /f "delims=" %%v in ('%%~c -c "import sys;print(\"%%d.%%d\" %% sys.version_info[:2])" 2^>nul') do (
+      for /f "delims=" %%k in ('%%~c -c "import sys;print(1 if sys.version_info[:2]>=(3,10) else 0)" 2^>nul') do (
+        if "%%k"=="1" (
+          set PYBIN=%%~c
+          set PYV=%%v
+        ) else (
+          echo   [!] %%~c 是 %%v，太老了，跳过
+        )
+      )
+    )
+  )
+)
+
+if not defined PYBIN (
   echo.
-  echo [X] 这台电脑没装 Python，或者装的时候没勾「Add Python to PATH」。
-  echo     去 https://www.python.org/downloads/ 装 3.10 以上的版本，
+  echo [X] 这台电脑上没有 3.10 以上的 Python。
+  echo     去 https://www.python.org/downloads/ 装一个，
   echo     安装第一页记得勾上【Add python.exe to PATH】，装完重新双击本文件。
   goto :end
 )
-for /f "delims=" %%v in ('python -c "import sys;print(\"%%d.%%d\" %% sys.version_info[:2])"') do set PYV=%%v
-for /f "delims=" %%v in ('python -c "import sys;print(1 if sys.version_info[:2]>=(3,10) else 0)"') do set PYOK=%%v
-if not "%PYOK%"=="1" (
-  echo.
-  echo [X] Python 版本太老了（当前 %PYV%），这个程序要 3.10 以上。
-  goto :end
-)
-echo   [OK] Python %PYV%
+echo   [OK] Python %PYV%（%PYBIN%）
 
 rem --- 3. 建运行环境 ---
 set NEED=0
@@ -59,7 +72,7 @@ if not exist "venv" (
 if "%NEED%"=="1" (
   echo.
   echo 正在装运行环境，要几分钟，别关窗口…
-  python -m venv venv
+  %PYBIN% -m venv venv
   if errorlevel 1 ( echo [X] 创建 venv 失败。& goto :end )
   venv\Scripts\python -m pip install --upgrade pip --quiet
   echo   装依赖（flask / playwright / openpyxl …）

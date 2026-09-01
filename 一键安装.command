@@ -54,22 +54,52 @@ if command -v xattr >/dev/null 2>&1; then
 fi
 chmod +x run_web.sh 启动.command 一键安装.command 一键更新.command >/dev/null 2>&1
 
-# ---- 3. 检查 Python ----
-# 全新的 Mac 上 python3 只是个占位命令，第一次调用会弹「需要安装命令行开发者工具」，
-# 命令本身返回失败。所以要试着真的执行一下，不能只看命令存不存在。
-if ! python3 --version >/dev/null 2>&1; then
-  die "这台电脑还不能用 python3。
-多半是没装「命令行开发者工具」——刚才可能已经弹了个安装窗口，点【安装】等它装完
-（要几分钟），然后重新双击本文件。
-如果没弹窗，在【终端】里执行：xcode-select --install"
+# ---- 3. 找一个能用的 Python ----
+#
+# 【不能只看 python3 这一个名字】。这是使用者真机踩到的：
+# 他用 python.org 装了 3.11，在终端里 `python` 确实是 3.11，可是双击
+# 一键安装.command 却报「版本太老了（当前 ??）」——
+# 因为 Finder 双击 .command 时用的是【精简 PATH】（基本只有 /usr/bin:/bin），
+# 里面的 python3 是系统自带那个（3.9 或没装开发者工具时的占位符），
+# 根本不是他装的 3.11；版本号读不出来就成了空的。
+#
+# 所以这里把常见的名字和 python.org / Homebrew 的固定安装路径都试一遍，
+# 挑第一个真的 >= 3.10 的，后面建 venv 也用这一个。
+PYBIN=""
+PYV=""
+SEEN=""
+
+for c in python3.14 python3.13 python3.12 python3.11 python3.10 python3 python \
+         /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 \
+         /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 \
+         /Library/Frameworks/Python.framework/Versions/3.12/bin/python3 \
+         /Library/Frameworks/Python.framework/Versions/3.11/bin/python3 \
+         /Library/Frameworks/Python.framework/Versions/3.10/bin/python3 \
+         /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+  # 名字要么在 PATH 里，要么是个能执行的绝对路径
+  if ! command -v "$c" >/dev/null 2>&1 && [ ! -x "$c" ]; then continue; fi
+  v=$("$c" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)
+  [ -n "$v" ] || continue
+  SEEN="$SEEN    $c  ->  $v
+"
+  if [ "$("$c" -c 'import sys; print(1 if sys.version_info[:2] >= (3,10) else 0)' 2>/dev/null)" = "1" ]; then
+    PYBIN="$c"; PYV="$v"; break
+  fi
+done
+
+if [ -z "$PYBIN" ]; then
+  if [ -z "$SEEN" ]; then
+    die "这台电脑上找不到能用的 Python。
+如果是全新的 Mac，多半是没装「命令行开发者工具」——刚才可能弹了个安装窗口，
+点【安装】等它装完（要几分钟），然后重新双击本文件。
+如果没弹窗，在【终端】里执行：xcode-select --install
+或者直接去 https://www.python.org/downloads/ 装一个 3.10 以上的。"
+  fi
+  die "找到了 Python，但没有一个够 3.10。这台电脑上看到的是：
+$SEEN
+去 https://www.python.org/downloads/ 装一个 3.10 以上的，装完重新双击本文件。"
 fi
-PYV=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)
-PYOK=$(python3 -c 'import sys; print(1 if sys.version_info[:2] >= (3,10) else 0)' 2>/dev/null)
-if [ "$PYOK" != "1" ]; then
-  die "Python 版本太老了（当前 $PYV），这个程序要 3.10 以上。
-去 https://www.python.org/downloads/ 装一个新的，装完重新双击本文件。"
-fi
-ok "Python $PYV"
+ok "Python $PYV（$PYBIN）"
 
 # ---- 4. 建运行环境 ----
 # venv 是个「只属于这个程序的 Python 环境」，装的东西不会污染整台电脑。
@@ -89,7 +119,7 @@ fi
 
 if [ "$NEED_INSTALL" = "1" ]; then
   say "正在装运行环境，要几分钟，别关窗口…"
-  python3 -m venv venv || die "创建 venv 失败。"
+  "$PYBIN" -m venv venv || die "创建 venv 失败。"
   venv/bin/python -m pip install --upgrade pip --quiet
   echo "  装依赖（flask / playwright / openpyxl …）"
   venv/bin/pip install -r requirements.txt || die "装依赖失败。检查一下网络。"
