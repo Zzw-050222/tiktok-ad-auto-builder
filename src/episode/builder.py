@@ -25,7 +25,6 @@
 """
 
 from src.pages.ad_page import (
-    fill_ad_copy,
     select_creative_materials,
     select_identity,
     wait_ad_page_ready,
@@ -40,6 +39,7 @@ from src.pages.campaign_page import (
     start_new_campaign,
 )
 from src.pages.duplicate import duplicate_ad_n_times
+from src.episode.pages.ad_page import fill_ad_copies
 from src.episode.pages.adgroup_page import fill_adgroup_core
 from src.region_lookup import resolve_regions
 
@@ -145,6 +145,8 @@ def fill_ad_identity_and_copy(page, rec, identity_name):
     身份失败只记警告，不把整条计划弄挂 —— 和小游戏那边同一条规矩
     （见 src/builder.py fill_ad_identity_copy_url 里的说明）：
     身份不是关键项，而且它在广告组层已经选过一次了。
+
+    返回 (身份的警告或 None, 文案的警告列表)。
     """
     issue = None
     if identity_name:
@@ -174,8 +176,10 @@ def fill_ad_identity_and_copy(page, rec, identity_name):
             issue = (f"广告层选身份失败（不影响其它步骤）: "
                      f"{str(last).splitlines()[0][:140]}")
 
-    fill_ad_copy(page, str(rec["ads_text"]))
-    return issue
+    # 文案可能是【多条】：表里那一格用 | 分隔，页面上最多 5 条，
+    # 填完一条下面会自动多出一个空框。见 episode/pages/ad_page.fill_ad_copies。
+    copy_warnings = fill_ad_copies(page, rec["ads_text"])
+    return issue, copy_warnings
 
 
 def fill_ad_creatives(page, rec, advertiser_id, search_term, creative_usage,
@@ -249,9 +253,11 @@ def _build_row_ads(page, rec, advertiser_id, search_term, identity_name,
     # ① 除素材以外先写完（没有 URL 这一项）
     print("      [广告层] ① 先写身份/文案（没有 URL 框；素材留到后面逐个挑）",
           flush=True)
-    issue = fill_ad_identity_and_copy(page, rec, identity_name)
+    issue, copy_warnings = fill_ad_identity_and_copy(page, rec, identity_name)
     if issue:
         warnings.append(f"[{tag}] {issue}")
+    for w in copy_warnings:
+        warnings.append(f"[{tag}] 文案：{w}")
 
     # ② 再复制 —— 复制的是【广告】，不是广告组。
     #
