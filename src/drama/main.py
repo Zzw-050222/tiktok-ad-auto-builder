@@ -47,7 +47,7 @@ def main():
     args = [a for a in argv if not a.startswith("--")]
     path = args[0] if args else "短剧-excel.xlsx"
 
-    records = load_rows(path)
+    records = load_rows(path, mode="drama")
     groups = group_by_campaign(records)
     series_map, _ = load_series_map()
 

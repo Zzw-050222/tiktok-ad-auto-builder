@@ -71,18 +71,47 @@ OPTIONAL_COLUMNS = [
 ]
 
 
-def load_rows(xlsx_path):
+# 必填列【按模式区分】。原来是全局一套（照小游戏定的），结果端计划的表被逼着
+# 留四列它根本用不到的：TT Mini ID / TT Mini URL / Mini Game Name / Identity_ID。
+# 使用者问「没用到的表头能不能删」——删了就报「Excel缺少必要的列」，那是我的问题。
+#
+# 端计划为什么不需要那四列：
+#   TT Mini ID / Mini Game Name —— 它选的是「剧集」，剧名从计划名开头取
+#   TT Mini URL                 —— 广告层压根没有 URL 这个框
+#   Identity_ID                 —— 身份走 Identity_drama / Identity_accoount
+#                                  两列，里面直接写身份名字，不查身份对照表
+REQUIRED_BY_MODE = {
+    "minigame": REQUIRED_COLUMNS,
+    "drama": REQUIRED_COLUMNS,
+    "episode": [
+        "Campaign Name",
+        "Budget",
+        "Advertiser ID",
+        "Ad Group Name",
+        "roas_bid",
+        "Region",
+        "ads_text",
+    ],
+}
+
+
+def load_rows(xlsx_path, mode="minigame"):
     wb = openpyxl.load_workbook(xlsx_path, data_only=True)
     ws = wb.active
     rows = list(ws.iter_rows(values_only=True))
     header = [str(h).strip() if h is not None else "" for h in rows[0]]
 
-    missing = [c for c in REQUIRED_COLUMNS if c not in header]
+    required = REQUIRED_BY_MODE.get(mode, REQUIRED_COLUMNS)
+    missing = [c for c in required if c not in header]
     if missing:
         raise ValueError(f"Excel缺少必要的列: {missing}")
 
-    idx = {name: header.index(name) for name in REQUIRED_COLUMNS}
-    optional_idx = {name: header.index(name) for name in OPTIONAL_COLUMNS if name in header}
+    # 只按【这个模式真正要求的】列建索引；其余认识的列走 optional，
+    # 表里没有就当空值，不会因为「小游戏需要」而逼着端计划的表留着。
+    idx = {name: header.index(name) for name in required}
+    extra = [c for c in REQUIRED_COLUMNS + OPTIONAL_COLUMNS
+             if c not in required and c not in idx]
+    optional_idx = {name: header.index(name) for name in extra if name in header}
 
     records = []
     # excel_row 是【表格里真实的行号】（表头是第 1 行，所以第一条数据是第 2 行）。

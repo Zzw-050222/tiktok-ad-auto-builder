@@ -462,13 +462,19 @@ const MODE_INFO = {
       + `素材不重复（按行覆盖下面那个开关，填 1/是 或 0/否）`,
   },
   episode: {
-    cols: `<b>必填列</b>：${REQUIRED}<br>`
+    // 端计划的必填列【和另外两个模式不一样】，别用 REQUIRED（那是小游戏那套）。
+    // 它用不到 TT Mini ID / TT Mini URL / Mini Game Name / Identity_ID，
+    // 这四列可以直接从表里删掉。
+    cols: `<b>必填列</b>：Campaign Name、Budget、Advertiser ID、Ad Group Name、`
+      + `roas_bid、Region、ads_text<br>`
       + `<b>端计划专用</b>：<b>Identity_drama</b>（广告组层的身份名，如 WeShorts_US）、`
       + `<b>Identity_accoount</b>（广告层的身份名 —— 和上面那个是<b>两个不同的东西</b>）、`
       + `Ad Number（这个广告组建几个广告，第 2 个起用复制广告生成，每个挑不同素材，默认 1）、`
       + `Creative Number（每个广告挑几个素材，>2 才手动挑）<br>`
+      + `<b>可以删掉</b>：TT Mini ID、TT Mini URL、Mini Game Name、Identity_ID、`
+      + `CreativeFile、Catalog ID、optimization_event 等 —— 端计划一律用不到<br>`
       + `<b>说明</b>：表格<b>一行 = 一个广告组</b>；剧名取自计划名开头，用来选「剧集」`
-      + `和在素材库搜素材；<b>不需要</b> TT Mini URL（这个页面没有 URL 框）`,
+      + `和在素材库搜素材；广告层没有 URL 框，所以不需要 TT Mini URL`,
   },
   drama: {
     cols: `<b>必填列</b>：${REQUIRED}<br><b>可选列</b>：Ad Group Name Number（复制份数）、`

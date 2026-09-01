@@ -40,7 +40,7 @@ def main():
         sys.exit(2)
     path = args[0]
 
-    records = load_rows(path)
+    records = load_rows(path, mode="episode")
     groups = group_by_campaign(records)
 
     # 剧目对照表是业务数据、不进安装包，没有也能跑（退回按 '-' 拆首段并警告）。

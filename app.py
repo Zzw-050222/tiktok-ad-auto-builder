@@ -249,7 +249,7 @@ def _friendly_fatal(exc):
 
 def _run_build(xlsx_path, publish, mode, unique_creatives=False):
     try:
-        records = load_rows(xlsx_path)
+        records = load_rows(xlsx_path, mode=mode)
         groups = group_by_campaign(records)
         with state_lock:
             run_state["status"] = "running"
@@ -509,7 +509,7 @@ def upload():
     f.save(str(UPLOAD_PATH))
 
     try:
-        records = load_rows(str(UPLOAD_PATH))
+        records = load_rows(str(UPLOAD_PATH), mode=mode)
         groups = group_by_campaign(records)
     except Exception as e:
         return jsonify({"ok": False, "error": f"表格格式有问题: {e}"}), 400
