@@ -17,9 +17,11 @@
      顺带说明：小游戏那边把 URL 提到复制之前填，是为了不让平台把页面拽到 URL 区、
      害得顶部「自动选择」跑到视口外（见 src/builder.py 里那段说明）。
      这里没有 URL 框，那个问题自然就不存在。
-  2. 素材的搜索词是【剧名】，不是表格里的 CreativeFile 列。
-     使用者原话：「素材名称就是计划名称第一个字段，也就是剧名」。
-  3. 素材去重的键是 (广告主, 剧名)，小游戏那边是 (广告主, 小游戏ID)。
+  2. 素材的搜索词取自表格的【CreativeFile】列。
+     注意这一条改过一次：最早是用剧名（计划名开头那一段）当搜索词，
+     2026-09-01 使用者改成「用 CreativeFile 这一列里填的名字」。
+     剧名现在只用来选「剧集」这个字段，不再当素材搜索词。
+  3. 素材去重的键是 (广告主, 搜索词)，小游戏那边是 (广告主, 小游戏ID)。
 """
 
 from src.pages.ad_page import (
@@ -114,6 +116,19 @@ def _ad_count_for(rec):
     return 1
 
 
+def _creative_search_term(rec):
+    """素材库的搜索词 —— 取表格的 CreativeFile 列。
+
+    2026-09-01 改的：原来用剧名（计划名开头那一段）。使用者要求改成这一列，
+    因为素材的命名不一定跟剧名走。剧名现在只负责选「剧集」那个字段。
+
+    刻意【不做】「CreativeFile 空就退回用剧名」这种兜底：
+    使用者明确说了不要再用计划名开头那一段。悄悄换个词去搜，搜出来的是别的素材，
+    比直接不挑更糟 —— 不挑至少页面上看得出来是「自动选择」。
+    """
+    return str(rec.get("CreativeFile") or "").strip()
+
+
 def _creative_count_for(rec):
     try:
         return int(float(str(rec.get("Creative Number")).strip()))
@@ -163,12 +178,11 @@ def fill_ad_identity_and_copy(page, rec, identity_name):
     return issue
 
 
-def fill_ad_creatives(page, rec, advertiser_id, series_name, creative_usage,
+def fill_ad_creatives(page, rec, advertiser_id, search_term, creative_usage,
                       patient=True):
     """广告层里【只挑素材】的那一半。返回一句警告或 None。
 
-    搜索词用【剧名】而不是 CreativeFile 列 —— 使用者原话：
-    「素材名称就是计划名称第一个字段，也就是剧名」。
+    search_term 来自表格的 CreativeFile 列（见 _creative_search_term）。
 
     patient=True：使用者要求「选素材的时候一定要慢，要往下滚动找素材，
     尽量不要选择重复的」。宁可慢，也别选重复。和小游戏那条路取值一致。
@@ -176,35 +190,40 @@ def fill_ad_creatives(page, rec, advertiser_id, series_name, creative_usage,
     count = _creative_count_for(rec)
     if count <= 2:
         return None
+    if not search_term:
+        return ("CreativeFile 这一列是空的，没法搜素材，这条广告的素材交给平台"
+                "「自动选择」了。要手动挑就在表里填上素材名。")
 
-    key = (str(advertiser_id), str(series_name))
+    # 去重键用【搜索词】而不是剧名：同一个搜索词才是同一批素材池，
+    # 换了搜索词本来就该重新数。
+    key = (str(advertiser_id), str(search_term))
     used = creative_usage.setdefault(key, set())
     kwargs = {"batch_wait_seconds": 40, "batch_settle_ms": 3000} if patient else {}
     # 把这一步的实际结果打出来。商品库那边本来就打，我这边漏了，
     # 结果第一次真机跑完只看到「✓ 成功」，而截图上创意素材那块还是「自动选择」——
     # 到底选了几个、去重集合有没有涨，全靠猜。
     before = len(used)
-    print(f"        [素材] 搜「{series_name}」，要 {count} 个"
-          f"（这个账号+剧目已用过 {before} 个）", flush=True)
+    print(f"        [素材] 搜「{search_term}」（来自 CreativeFile 列），要 {count} 个"
+          f"（这个账号+这个搜索词已用过 {before} 个）", flush=True)
     selected, wrapped = select_creative_materials(
-        page, series_name, count, used_ids=used, **kwargs
+        page, search_term, count, used_ids=used, **kwargs
     )
     print(f"        [素材] 选到 {selected} 个，去重集合 {before} → {len(used)}"
           f"，绕回头复用={wrapped}", flush=True)
     if selected < count:
         return (
-            f"素材库搜索「{series_name}」只选到 {selected}/{count} 个素材"
+            f"素材库搜索「{search_term}」只选到 {selected}/{count} 个素材"
             f"（整个素材库连一轮都凑不满 {count} 个）"
         )
     if wrapped:
         return (
-            f"素材库搜索「{series_name}」的素材已全部用过一轮，"
+            f"素材库搜索「{search_term}」的素材已全部用过一轮，"
             "本条广告开始复用（素材不够，这是预期的兜底行为）"
         )
     return None
 
 
-def _build_row_ads(page, rec, advertiser_id, series_name, identity_name,
+def _build_row_ads(page, rec, advertiser_id, search_term, identity_name,
                    creative_usage, extra_copies, warnings):
     """广告层这一段：① 身份+文案 ② 复制广告组 ③ 沿「继续」逐个挑素材。
 
@@ -268,7 +287,7 @@ def _build_row_ads(page, rec, advertiser_id, series_name, identity_name,
     filled = 0
     for k in range(total_ads):
         got = fill_ad_creatives(
-            page, rec, advertiser_id, series_name, creative_usage, patient=True
+            page, rec, advertiser_id, search_term, creative_usage, patient=True
         )
         if got:
             warnings.append(f"[{tag} 第{k + 1}/{total_ads}个广告] {got}")
@@ -312,7 +331,7 @@ def build_episode_campaign(page, advertiser_id, campaign_name, budget, rows,
         series_name, name_warn = series_name_for(campaign_name, series_name_map)
         if name_warn:
             warnings.append(name_warn)
-        print(f"      剧名（用于选剧集和搜素材）：{series_name!r}", flush=True)
+        print(f"      剧名（只用于选「剧集」这个字段）：{series_name!r}", flush=True)
 
         # ---- 计划层：完全复刻小游戏，一行新代码都没有 ----
         start_new_campaign(page, advertiser_id)
@@ -360,12 +379,20 @@ def build_episode_campaign(page, advertiser_id, campaign_name, budget, rows,
             wait_ad_page_ready(page)
 
             # ---- 广告层 ----
+            search_term = _creative_search_term(rec)
+            if not search_term and _creative_count_for(rec) > 2:
+                warnings.append(
+                    f"[{tag}] Creative Number 是 {rec.get('Creative Number')!r} "
+                    "（要手动挑素材），但 CreativeFile 这一列是空的 —— "
+                    "素材会交给平台「自动选择」，每个广告素材不同这件事就不成立了。"
+                )
+
             ad_count = _ad_count_for(rec)
             if ad_count > 1:
                 print(f"      这个广告组要建 {ad_count} 个广告"
                       f"（第 2 个起用复制广告生成，每个挑不同素材）", flush=True)
             filled, total_ads = _build_row_ads(
-                page, rec, advertiser_id, series_name, ident_ad,
+                page, rec, advertiser_id, search_term, ident_ad,
                 creative_usage, ad_count - 1, warnings,
             )
             if filled < total_ads:
