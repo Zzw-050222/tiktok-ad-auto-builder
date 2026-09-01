@@ -1,33 +1,35 @@
 @echo off
-chcp 65001 >nul
+rem ±¾ÎÄ¼þÓÃ GBK(936) ±àÂë±£´æ¡¢CRLF »»ÐÐ ¡ª¡ª Á½¸ö¶¼²»ÄÜ¸Ä£¬¸ÄÁË cmd ¾Í½âÎö²»ÁËÖÐÎÄ¡£
+rem Ïê¼ûÍ¬Ä¿Â¼ .gitattributes ÀïµÄËµÃ÷¡£ÓÃ±à¼­Æ÷¸Ä±¾ÎÄ¼þÊ±¼ÇµÃ±£³Ö GBK ±àÂë¡£
+chcp 936 >nul
 setlocal
 cd /d "%~dp0"
 
-rem ä¸€é”®å®‰è£…ï¼ˆWindowsï¼‰â€”â€” å…¨æ–°ç”µè„‘ä¸Šè£…è¿™ä¸ªç¨‹åºï¼ŒåŒå‡»è¿™ä¸ªæ–‡ä»¶å°±è¡Œã€‚
+rem Ò»¼ü°²×°£¨Windows£©¡ª¡ª È«ÐÂµçÄÔÉÏ×°Õâ¸ö³ÌÐò£¬Ë«»÷Õâ¸öÎÄ¼þ¾ÍÐÐ¡£
 rem
-rem ä¸ºä»€ä¹ˆè¦æœ‰è¿™ä¸ªæ–‡ä»¶ï¼šåŽŸæ¥çš„è¯´æ˜Žä¹¦è®©äººæ‰‹æ•²ä¸‰è¡Œå‘½ä»¤ï¼Œè€Œé‚£ä¸‰è¡Œã€å¿…é¡»åœ¨
-rem auto-builder æ–‡ä»¶å¤¹é‡Œã€‘æ•²ã€‚ç»ˆç«¯ä¸€æ‰“å¼€åœ¨ç”¨æˆ·ä¸»ç›®å½•ï¼Œç›´æŽ¥ç²˜è¿›åŽ»å°±ä¼šæŠ¥
-rem ã€Œæ‰¾ä¸åˆ° requirements.txtã€ã€‚åŒå‡»è¿è¡Œçš„è„šæœ¬è‡ªå·±çŸ¥é“è‡ªå·±åœ¨å“ªï¼Œä¸ä¼šæœ‰è¿™ä¸ªé—®é¢˜ã€‚
+rem ÎªÊ²Ã´ÒªÓÐÕâ¸öÎÄ¼þ£ºÔ­À´µÄËµÃ÷ÊéÈÃÈËÊÖÇÃÈýÐÐÃüÁî£¬¶øÄÇÈýÐÐ¡¾±ØÐëÔÚ
+rem auto-builder ÎÄ¼þ¼ÐÀï¡¿ÇÃ¡£ÖÕ¶ËÒ»´ò¿ªÔÚÓÃ»§Ö÷Ä¿Â¼£¬Ö±½ÓÕ³½øÈ¥¾Í»á±¨
+rem ¡¸ÕÒ²»µ½ requirements.txt¡¹¡£Ë«»÷ÔËÐÐµÄ½Å±¾×Ô¼ºÖªµÀ×Ô¼ºÔÚÄÄ£¬²»»áÓÐÕâ¸öÎÊÌâ¡£
 rem
-rem é‡å¤è¿è¡Œæ˜¯å®‰å…¨çš„ï¼šè£…å¥½çš„ä¸ä¼šé‡è£…ï¼Œç™»å½•æ€å’Œè¡¨æ ¼ä¸€æ ¹æ‰‹æŒ‡éƒ½ä¸ç¢°ã€‚
+rem ÖØ¸´ÔËÐÐÊÇ°²È«µÄ£º×°ºÃµÄ²»»áÖØ×°£¬µÇÂ¼Ì¬ºÍ±í¸ñÒ»¸ùÊÖÖ¸¶¼²»Åö¡£
 
 set REPO=https://github.com/Zzw-050222/tiktok-ad-auto-builder.git
 
 echo.
-echo === TikTok å¹¿å‘Šè‡ªåŠ¨æ­å»º Â· ä¸€é”®å®‰è£… ===
-echo æ–‡ä»¶å¤¹ï¼š%cd%
+echo === TikTok ¹ã¸æ×Ô¶¯´î½¨ ¡¤ Ò»¼ü°²×° ===
+echo ÎÄ¼þ¼Ð£º%cd%
 echo.
 
-rem --- 1. å…ˆç¡®è®¤ä½ç½®å¯¹ä¸å¯¹ ---
+rem --- 1. ÏÈÈ·ÈÏÎ»ÖÃ¶Ô²»¶Ô ---
 if not exist "requirements.txt" goto :wrongdir
 if not exist "app.py" goto :wrongdir
-echo   [OK] ä½ç½®æ­£ç¡®
+echo   [OK] Î»ÖÃÕýÈ·
 
-rem --- 2. æ‰¾ä¸€ä¸ªèƒ½ç”¨çš„ Python ---
-rem å’Œ macOS é‚£è¾¹åŒä¸€ä¸ªç†ç”±ï¼šä¸èƒ½åªèµŒ python è¿™ä¸€ä¸ªåå­—ã€‚
-rem Windows ä¸Šè£…äº† Python å®˜æ–¹ç‰ˆä¼šå¸¦ py å¯åŠ¨å™¨ï¼ˆpy -3.12 è¿™ç§ï¼‰ï¼Œ
-rem è€Œ PATH é‡Œçš„ python å¯èƒ½æ˜¯åˆ«çš„ç‰ˆæœ¬ã€ç”šè‡³æ˜¯åº”ç”¨å•†åº—é‚£ä¸ªå ä½ç¬¦ã€‚
-rem æ‰€ä»¥æŒ‰æ–°åˆ°æ—§è¯•ä¸€éï¼ŒæŒ‘ç¬¬ä¸€ä¸ª >= 3.10 çš„ã€‚
+rem --- 2. ÕÒÒ»¸öÄÜÓÃµÄ Python ---
+rem ºÍ macOS ÄÇ±ßÍ¬Ò»¸öÀíÓÉ£º²»ÄÜÖ»¶Ä python ÕâÒ»¸öÃû×Ö¡£
+rem Windows ÉÏ×°ÁË Python ¹Ù·½°æ»á´ø py Æô¶¯Æ÷£¨py -3.12 ÕâÖÖ£©£¬
+rem ¶ø PATH ÀïµÄ python ¿ÉÄÜÊÇ±ðµÄ°æ±¾¡¢ÉõÖÁÊÇÓ¦ÓÃÉÌµêÄÇ¸öÕ¼Î»·û¡£
+rem ËùÒÔ°´ÐÂµ½¾ÉÊÔÒ»±é£¬ÌôµÚÒ»¸ö >= 3.10 µÄ¡£
 set PYBIN=
 set PYV=
 for %%c in ("py -3.14" "py -3.13" "py -3.12" "py -3.11" "py -3.10" "py -3" "python" "python3") do (
@@ -38,7 +40,7 @@ for %%c in ("py -3.14" "py -3.13" "py -3.12" "py -3.11" "py -3.10" "py -3" "pyth
           set PYBIN=%%~c
           set PYV=%%v
         ) else (
-          echo   [!] %%~c æ˜¯ %%vï¼Œå¤ªè€äº†ï¼Œè·³è¿‡
+          echo   [!] %%~c ÊÇ %%v£¬Ì«ÀÏÁË£¬Ìø¹ý
         )
       )
     )
@@ -47,96 +49,96 @@ for %%c in ("py -3.14" "py -3.13" "py -3.12" "py -3.11" "py -3.10" "py -3" "pyth
 
 if not defined PYBIN (
   echo.
-  echo [X] è¿™å°ç”µè„‘ä¸Šæ²¡æœ‰ 3.10 ä»¥ä¸Šçš„ Pythonã€‚
-  echo     åŽ» https://www.python.org/downloads/ è£…ä¸€ä¸ªï¼Œ
-  echo     å®‰è£…ç¬¬ä¸€é¡µè®°å¾—å‹¾ä¸Šã€Add python.exe to PATHã€‘ï¼Œè£…å®Œé‡æ–°åŒå‡»æœ¬æ–‡ä»¶ã€‚
+  echo [X] ÕâÌ¨µçÄÔÉÏÃ»ÓÐ 3.10 ÒÔÉÏµÄ Python¡£
+  echo     È¥ https://www.python.org/downloads/ ×°Ò»¸ö£¬
+  echo     °²×°µÚÒ»Ò³¼ÇµÃ¹´ÉÏ¡¾Add python.exe to PATH¡¿£¬×°ÍêÖØÐÂË«»÷±¾ÎÄ¼þ¡£
   goto :end
 )
-echo   [OK] Python %PYV%ï¼ˆ%PYBIN%ï¼‰
+echo   [OK] Python %PYV%£¨%PYBIN%£©
 
-rem --- 3. å»ºè¿è¡ŒçŽ¯å¢ƒ ---
+rem --- 3. ½¨ÔËÐÐ»·¾³ ---
 set NEED=0
 if not exist "venv" (
   set NEED=1
 ) else (
   venv\Scripts\python -c "import flask, openpyxl, playwright, requests, dotenv" >nul 2>nul
   if errorlevel 1 (
-    echo   [!] å·²æœ‰çš„è¿è¡ŒçŽ¯å¢ƒä¸å®Œæ•´ï¼ˆä¸Šæ¬¡å¯èƒ½è£…åˆ°ä¸€åŠä¸­æ–­äº†ï¼‰ï¼Œé‡è£…ä¸€é
+    echo   [!] ÒÑÓÐµÄÔËÐÐ»·¾³²»ÍêÕû£¨ÉÏ´Î¿ÉÄÜ×°µ½Ò»°ëÖÐ¶ÏÁË£©£¬ÖØ×°Ò»±é
     rmdir /s /q venv
     set NEED=1
   ) else (
-    echo   [OK] è¿è¡ŒçŽ¯å¢ƒå·²å­˜åœ¨
+    echo   [OK] ÔËÐÐ»·¾³ÒÑ´æÔÚ
   )
 )
 
 if "%NEED%"=="1" (
   echo.
-  echo æ­£åœ¨è£…è¿è¡ŒçŽ¯å¢ƒï¼Œè¦å‡ åˆ†é’Ÿï¼Œåˆ«å…³çª—å£â€¦
+  echo ÕýÔÚ×°ÔËÐÐ»·¾³£¬Òª¼¸·ÖÖÓ£¬±ð¹Ø´°¿Ú¡­
   %PYBIN% -m venv venv
-  if errorlevel 1 ( echo [X] åˆ›å»º venv å¤±è´¥ã€‚& goto :end )
+  if errorlevel 1 ( echo [X] ´´½¨ venv Ê§°Ü¡£& goto :end )
   venv\Scripts\python -m pip install --upgrade pip --quiet
-  echo   è£…ä¾èµ–ï¼ˆflask / playwright / openpyxl â€¦ï¼‰
+  echo   ×°ÒÀÀµ£¨flask / playwright / openpyxl ¡­£©
   venv\Scripts\pip install -r requirements.txt
-  if errorlevel 1 ( echo [X] è£…ä¾èµ–å¤±è´¥ã€‚æ£€æŸ¥ä¸€ä¸‹ç½‘ç»œã€‚& goto :end )
-  echo   [OK] ä¾èµ–è£…å¥½äº†
+  if errorlevel 1 ( echo [X] ×°ÒÀÀµÊ§°Ü¡£¼ì²éÒ»ÏÂÍøÂç¡£& goto :end )
+  echo   [OK] ÒÀÀµ×°ºÃÁË
 )
 
-rem --- 4. è£… Chromiumï¼ˆç¨‹åºé å®ƒåŽ»ç‚¹ TikTok åŽå°ï¼Œæ²¡æœ‰å®ƒè·‘ä¸èµ·æ¥ï¼‰---
+rem --- 4. ×° Chromium£¨³ÌÐò¿¿ËüÈ¥µã TikTok ºóÌ¨£¬Ã»ÓÐËüÅÜ²»ÆðÀ´£©---
 venv\Scripts\python -c "from playwright.sync_api import sync_playwright as s;import pathlib,sys;p=s().start();sys.exit(0 if pathlib.Path(p.chromium.executable_path).exists() else 1)" >nul 2>nul
 if errorlevel 1 (
   echo.
-  echo æ­£åœ¨è£… Chromium æµè§ˆå™¨ï¼ˆçº¦ 150MBï¼Œåˆ«å…³çª—å£ï¼‰â€¦
+  echo ÕýÔÚ×° Chromium ä¯ÀÀÆ÷£¨Ô¼ 150MB£¬±ð¹Ø´°¿Ú£©¡­
   venv\Scripts\playwright install chromium
-  if errorlevel 1 ( echo [X] è£… Chromium å¤±è´¥ã€‚æ£€æŸ¥ä¸€ä¸‹ç½‘ç»œã€‚& goto :end )
-  echo   [OK] Chromium è£…å¥½äº†
+  if errorlevel 1 ( echo [X] ×° Chromium Ê§°Ü¡£¼ì²éÒ»ÏÂÍøÂç¡£& goto :end )
+  echo   [OK] Chromium ×°ºÃÁË
 ) else (
-  echo   [OK] Chromium æµè§ˆå™¨å·²è£…å¥½
+  echo   [OK] Chromium ä¯ÀÀÆ÷ÒÑ×°ºÃ
 )
 
-rem --- 5. æŽ¥åˆ° GitHubï¼Œæ–¹ä¾¿ä»¥åŽä¸€é”®æ›´æ–°ï¼ˆä»£ç ä»“åº“æ˜¯å…¬å¼€çš„ï¼Œä¸ç”¨ç™»å½•ï¼‰---
+rem --- 5. ½Óµ½ GitHub£¬·½±ãÒÔºóÒ»¼ü¸üÐÂ£¨´úÂë²Ö¿âÊÇ¹«¿ªµÄ£¬²»ÓÃµÇÂ¼£©---
 where git >nul 2>nul
 if errorlevel 1 (
-  echo   [!] è¿™å°ç”µè„‘æ²¡è£… gitï¼Œè£…å¥½ä¹‹åŽæ‰èƒ½ç”¨ã€Œä¸€é”®æ›´æ–°ã€ã€‚
-  echo       è£…æ³•ï¼šhttps://git-scm.com/download/win
+  echo   [!] ÕâÌ¨µçÄÔÃ»×° git£¬×°ºÃÖ®ºó²ÅÄÜÓÃ¡¸Ò»¼ü¸üÐÂ¡¹¡£
+  echo       ×°·¨£ºhttps://git-scm.com/download/win
 ) else (
   if not exist ".git" (
     git init -q
     git remote add origin %REPO%
-    echo   [OK] å·²æŽ¥åˆ° GitHubï¼ˆä»¥åŽåŒå‡»ã€Œä¸€é”®æ›´æ–°.batã€å°±èƒ½æ‹¿æœ€æ–°ç‰ˆï¼‰
+    echo   [OK] ÒÑ½Óµ½ GitHub£¨ÒÔºóË«»÷¡¸Ò»¼ü¸üÐÂ.bat¡¹¾ÍÄÜÄÃ×îÐÂ°æ£©
   ) else (
     git remote set-url origin %REPO% 2>nul
-    echo   [OK] å·²æŽ¥åˆ° GitHub
+    echo   [OK] ÒÑ½Óµ½ GitHub
   )
 )
 
-rem --- 6. è‡ªæ£€ï¼šã€Œå‘½ä»¤æ²¡æŠ¥é”™ã€ä¸ç­‰äºŽã€ŒçœŸçš„èƒ½è·‘ã€---
+rem --- 6. ×Ô¼ì£º¡¸ÃüÁîÃ»±¨´í¡¹²»µÈÓÚ¡¸ÕæµÄÄÜÅÜ¡¹---
 echo.
-echo === è‡ªæ£€ ===
+echo === ×Ô¼ì ===
 venv\Scripts\python -c "import flask, openpyxl, playwright, requests, dotenv" >nul 2>nul
-if errorlevel 1 ( echo [X] ä¾èµ–è£…äº†ä½†åŠ è½½ä¸äº†ã€‚& goto :end )
-echo   [OK] ä¾èµ–éƒ½èƒ½åŠ è½½
+if errorlevel 1 ( echo [X] ÒÀÀµ×°ÁËµ«¼ÓÔØ²»ÁË¡£& goto :end )
+echo   [OK] ÒÀÀµ¶¼ÄÜ¼ÓÔØ
 venv\Scripts\python -c "from playwright.sync_api import sync_playwright as s;import pathlib,sys;p=s().start();sys.exit(0 if pathlib.Path(p.chromium.executable_path).exists() else 1)" >nul 2>nul
-if errorlevel 1 ( echo [X] Chromium æ²¡è£…ä¸Šã€‚é‡æ–°åŒå‡»æœ¬æ–‡ä»¶å†è¯•ä¸€æ¬¡ã€‚& goto :end )
-echo   [OK] Chromium å¯ç”¨
+if errorlevel 1 ( echo [X] Chromium Ã»×°ÉÏ¡£ÖØÐÂË«»÷±¾ÎÄ¼þÔÙÊÔÒ»´Î¡£& goto :end )
+echo   [OK] Chromium ¿ÉÓÃ
 venv\Scripts\python -c "import app" >nul 2>nul
-if errorlevel 1 ( echo   [!] ç¨‹åºæœ¬ä½“åŠ è½½æœ‰é—®é¢˜ï¼Œå¯åŠ¨æ—¶å¦‚æžœæŠ¥é”™è¯·æŠŠæ—¥å¿—å‘ç»™å¼€å‘è€… ) else ( echo   [OK] ç¨‹åºæœ¬ä½“èƒ½åŠ è½½ )
+if errorlevel 1 ( echo   [!] ³ÌÐò±¾Ìå¼ÓÔØÓÐÎÊÌâ£¬Æô¶¯Ê±Èç¹û±¨´íÇë°ÑÈÕÖ¾·¢¸ø¿ª·¢Õß ) else ( echo   [OK] ³ÌÐò±¾ÌåÄÜ¼ÓÔØ )
 
 echo.
-echo === è£…å¥½äº† ===
-echo æŽ¥ä¸‹æ¥ï¼š
-echo   1. åŒå‡»ã€run_web.batã€‘
-echo   2. æµè§ˆå™¨æ‰“å¼€ http://127.0.0.1:5050
-echo   3. åœ¨ç½‘é¡µç¬¬ 2 æ­¥ç‚¹ã€ç™»å½• / æ¢è´¦å·ã€‘ï¼Œç™»å½•è‡ªå·±çš„ BC è´¦å·
-echo      â€”â€”ç™»å½•æ€åªå­˜åœ¨è¿™å°ç”µè„‘ä¸Šï¼Œç¨‹åºé‡Œæ²¡æœ‰ä»»ä½•è´¦å·å¯†ç 
+echo === ×°ºÃÁË ===
+echo ½ÓÏÂÀ´£º
+echo   1. Ë«»÷¡¾run_web.bat¡¿
+echo   2. ä¯ÀÀÆ÷´ò¿ª http://127.0.0.1:5050
+echo   3. ÔÚÍøÒ³µÚ 2 ²½µã¡¾µÇÂ¼ / »»ÕËºÅ¡¿£¬µÇÂ¼×Ô¼ºµÄ BC ÕËºÅ
+echo      ¡ª¡ªµÇÂ¼Ì¬Ö»´æÔÚÕâÌ¨µçÄÔÉÏ£¬³ÌÐòÀïÃ»ÓÐÈÎºÎÕËºÅÃÜÂë
 echo.
-echo ä»¥åŽè¦æ›´æ–°ï¼šåŒå‡»ã€ä¸€é”®æ›´æ–°.batã€‘ï¼Œç™»å½•æ€ã€æ—¥å¿—ã€è¡¨æ ¼éƒ½ä¸ä¼šä¸¢ã€‚
+echo ÒÔºóÒª¸üÐÂ£ºË«»÷¡¾Ò»¼ü¸üÐÂ.bat¡¿£¬µÇÂ¼Ì¬¡¢ÈÕÖ¾¡¢±í¸ñ¶¼²»»á¶ª¡£
 goto :end
 
 :wrongdir
 echo.
-echo [X] è¿™ä¸ªæ–‡ä»¶å¤¹é‡Œæ²¡æœ‰ requirements.txt æˆ– app.pyï¼Œä¸åƒæ˜¯ auto-builder ç¨‹åºæ–‡ä»¶å¤¹ã€‚
-echo     æŠŠã€Œä¸€é”®å®‰è£….batã€æ”¾å›žè§£åŽ‹å‡ºæ¥çš„ auto-builder æ–‡ä»¶å¤¹é‡Œå†åŒå‡»ã€‚
-echo     ï¼ˆè§£åŽ‹åŽé‡Œé¢åº”è¯¥èƒ½çœ‹åˆ° app.pyã€run_web.batã€src è¿™äº›ä¸œè¥¿ï¼‰
+echo [X] Õâ¸öÎÄ¼þ¼ÐÀïÃ»ÓÐ requirements.txt »ò app.py£¬²»ÏñÊÇ auto-builder ³ÌÐòÎÄ¼þ¼Ð¡£
+echo     °Ñ¡¸Ò»¼ü°²×°.bat¡¹·Å»Ø½âÑ¹³öÀ´µÄ auto-builder ÎÄ¼þ¼ÐÀïÔÙË«»÷¡£
+echo     £¨½âÑ¹ºóÀïÃæÓ¦¸ÃÄÜ¿´µ½ app.py¡¢run_web.bat¡¢src ÕâÐ©¶«Î÷£©
 
 :end
 echo.

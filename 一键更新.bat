@@ -1,36 +1,37 @@
 @echo off
-chcp 65001 >nul
+rem ±¾ÎÄ¼þÓÃ GBK(936) ±àÂë±£´æ¡¢CRLF »»ÐÐ ¡ª¡ª Á½¸ö¶¼²»ÄÜ¸Ä¡£Ïê¼û .gitattributes¡£
+chcp 936 >nul
 setlocal
 cd /d "%~dp0"
 
-rem ä¸€é”®æ›´æ–°ï¼ˆWindowsï¼‰â€”â€” åŒå‡»è¿™ä¸ªæ–‡ä»¶å°±è¡Œã€‚
+rem Ò»¼ü¸üÐÂ£¨Windows£©¡ª¡ª Ë«»÷Õâ¸öÎÄ¼þ¾ÍÐÐ¡£
 rem
-rem ä»Ž GitHub æŠŠæœ€æ–°ä»£ç æ‹‰ä¸‹æ¥è¦†ç›–æŽ‰æ—§ä»£ç ï¼Œç„¶åŽï¼ˆé¦–æ¬¡æˆ–ä¾èµ–æœ‰å˜æ—¶ï¼‰è£…å¥½è¿è¡ŒçŽ¯å¢ƒã€‚
-rem ç™»å½•æ€ã€æ—¥å¿—ã€ä¸Šä¼ çš„è¡¨æ ¼éƒ½ä¸ä¼šè¢«åŠ¨â€”â€”å®ƒä»¬æ˜¯ git æœªè·Ÿè¸ªçš„æ–‡ä»¶ï¼Œ
-rem git reset --hard ä¸€æ ¹æ‰‹æŒ‡éƒ½ä¸ç¢°ã€‚
+rem ´Ó GitHub °Ñ×îÐÂ´úÂëÀ­ÏÂÀ´¸²¸Çµô¾É´úÂë£¬È»ºó£¨Ê×´Î»òÒÀÀµÓÐ±äÊ±£©×°ºÃÔËÐÐ»·¾³¡£
+rem µÇÂ¼Ì¬¡¢ÈÕÖ¾¡¢ÉÏ´«µÄ±í¸ñ¶¼²»»á±»¶¯¡ª¡ªËüÃÇÊÇ git Î´¸ú×ÙµÄÎÄ¼þ£¬
+rem git reset --hard Ò»¸ùÊÖÖ¸¶¼²»Åö¡£
 
 set REPO=https://github.com/Zzw-050222/tiktok-ad-auto-builder.git
 set BRANCH=master
 
 echo.
-echo === TikTok å¹¿å‘Šè‡ªåŠ¨æ­å»º Â· ä¸€é”®æ›´æ–° ===
-echo æ–‡ä»¶å¤¹ï¼š%cd%
+echo === TikTok ¹ã¸æ×Ô¶¯´î½¨ ¡¤ Ò»¼ü¸üÐÂ ===
+echo ÎÄ¼þ¼Ð£º%cd%
 echo.
 
 where git >nul 2>nul
 if errorlevel 1 (
-  echo [X] è¿™å°ç”µè„‘æ²¡è£… gitï¼Œæ²¡æ³•è‡ªåŠ¨æ›´æ–°ã€‚ä¸¤ä¸ªåŠžæ³•ï¼Œé€‰ä¸€ä¸ªï¼š
+  echo [X] ÕâÌ¨µçÄÔÃ»×° git£¬Ã»·¨×Ô¶¯¸üÐÂ¡£Á½¸ö°ì·¨£¬Ñ¡Ò»¸ö£º
   echo.
-  echo   1. è£… gitï¼ˆæŽ¨èï¼Œä»¥åŽå°±èƒ½ä¸€é”®æ›´æ–°ï¼‰ï¼šhttps://git-scm.com/download/win
-  echo   2. ä¸è£… gitï¼šåŽ»ç§æœ‰ä»“åº“ä¸‹è½½ auto-builder-æœ€æ–°ç‰ˆ.zipï¼Œ
-  echo      è§£åŽ‹åŽæŠŠæ–‡ä»¶è¦†ç›–åˆ°è¿™ä¸ªæ–‡ä»¶å¤¹å³å¯ã€‚venvã€ç™»å½•æ€ã€æ—¥å¿—ã€ä½ çš„è¡¨æ ¼
-  echo      éƒ½ä¸åœ¨é‚£ä¸ªåŽ‹ç¼©åŒ…é‡Œï¼Œè¦†ç›–ä¸ä¼šåŠ¨å®ƒä»¬ã€‚
+  echo   1. ×° git£¨ÍÆ¼ö£¬ÒÔºó¾ÍÄÜÒ»¼ü¸üÐÂ£©£ºhttps://git-scm.com/download/win
+  echo   2. ²»×° git£ºÈ¥Ë½ÓÐ²Ö¿âÏÂÔØ auto-builder-×îÐÂ°æ.zip£¬
+  echo      ½âÑ¹ºó°ÑÎÄ¼þ¸²¸Çµ½Õâ¸öÎÄ¼þ¼Ð¼´¿É¡£venv¡¢µÇÂ¼Ì¬¡¢ÈÕÖ¾¡¢ÄãµÄ±í¸ñ
+  echo      ¶¼²»ÔÚÄÇ¸öÑ¹Ëõ°üÀï£¬¸²¸Ç²»»á¶¯ËüÃÇ¡£
   goto :end
 )
 
-rem --- 1. æ²¡æœ‰ .git å°±æŠŠæ–‡ä»¶å¤¹æŽ¥åˆ° GitHubï¼ˆå½“åˆæ˜¯æ‹·æ–‡ä»¶è£…çš„å°±ä¼šè¿™æ ·ï¼‰---
+rem --- 1. Ã»ÓÐ .git ¾Í°ÑÎÄ¼þ¼Ð½Óµ½ GitHub£¨µ±³õÊÇ¿½ÎÄ¼þ×°µÄ¾Í»áÕâÑù£©---
 if not exist ".git" (
-  echo ç¬¬ä¸€æ¬¡ç”¨è¿™ä¸ªå·¥å…·ï¼Œæ­£åœ¨æŠŠæ–‡ä»¶å¤¹æŽ¥åˆ° GitHubâ€¦
+  echo µÚÒ»´ÎÓÃÕâ¸ö¹¤¾ß£¬ÕýÔÚ°ÑÎÄ¼þ¼Ð½Óµ½ GitHub¡­
   git init -q
   git remote add origin %REPO%
 ) else (
@@ -38,85 +39,90 @@ if not exist ".git" (
   if errorlevel 1 git remote add origin %REPO%
 )
 
-rem --- 2. æœ‰äººæ”¹è¿‡ç¨‹åºæœ¬ä½“å°±å…ˆé—®ä¸€å£° ---
+rem --- 2. ÓÐÈË¸Ä¹ý³ÌÐò±¾Ìå¾ÍÏÈÎÊÒ»Éù ---
+rem ÕâÒ»¶Î²»ÄÜÓÃ if (...) À¨ºÅ°üÆðÀ´£ºÕû¸öÀ¨ºÅ¿éÊÇÒ»´ÎÐÔ½âÎöµÄ£¬%ANS% ÔÚ
+rem set /p »¹Ã»Ö´ÐÐÊ±¾ÍÒÑ¾­±»Ìæ»»³É¿Õ×Ö·û´®ÁË£¬ÓÚÊÇ²»¹ÜÓÃ»§´ð y »¹ÊÇ n£¬
+rem ¶¼»á×ß½ø¡¸ÒÑÈ¡Ïû¡¹¡£¸Ä³É goto Ìø¹ý£¬%ANS% ²ÅÄÜ¶Áµ½ÓÃ»§ÕæÕýÊäÈëµÄ¶«Î÷¡£
+set DIRTY=
 for /f %%i in ('git status --porcelain --untracked-files^=no 2^>nul ^| find /c /v ""') do set DIRTY=%%i
-if not "%DIRTY%"=="0" (
-  echo.
-  echo æ³¨æ„ï¼šè¿™å°ç”µè„‘ä¸Šæœ‰äººæ”¹è¿‡ç¨‹åºæ–‡ä»¶ï¼Œæ›´æ–°ä¼šæŠŠè¿™äº›æ”¹åŠ¨è¦†ç›–æŽ‰ï¼š
-  git status --short --untracked-files=no
-  echo.
-  set /p ANS="è¦ç»§ç»­å—ï¼Ÿ[y/N] "
-  if /i not "%ANS%"=="y" (
-    echo å·²å–æ¶ˆï¼Œä»€ä¹ˆéƒ½æ²¡åŠ¨ã€‚
-    goto :end
-  )
-)
-
-rem --- 3. æ‹‰æœ€æ–°ä»£ç  ---
+if "%DIRTY%"=="0" goto :nochange
 echo.
-echo æ­£åœ¨ä»Ž GitHub æ‹‰å–æœ€æ–°ä»£ç â€¦
+echo ×¢Òâ£ºÕâÌ¨µçÄÔÉÏÓÐÈË¸Ä¹ý³ÌÐòÎÄ¼þ£¬¸üÐÂ»á°ÑÕâÐ©¸Ä¶¯¸²¸Çµô£º
+git status --short --untracked-files=no
+echo.
+set ANS=
+set /p ANS="Òª¼ÌÐøÂð£¿[y/N] "
+if /i not "%ANS%"=="y" (
+  echo ÒÑÈ¡Ïû£¬Ê²Ã´¶¼Ã»¶¯¡£
+  goto :end
+)
+:nochange
+
+rem --- 3. À­×îÐÂ´úÂë ---
+echo.
+echo ÕýÔÚ´Ó GitHub À­È¡×îÐÂ´úÂë¡­
 if exist requirements.txt (
   certutil -hashfile requirements.txt MD5 | findstr /r /v "hash CertUtil" > "%TEMP%\ab_req_before.txt"
 )
 for /f %%i in ('git rev-parse --short HEAD 2^>nul') do set OLD=%%i
-if "%OLD%"=="" set OLD=(æ— )
+if "%OLD%"=="" set OLD=(ÎÞ)
 
 git fetch --depth=1 origin %BRANCH%
 if errorlevel 1 (
-  echo [X] æ‹‰å–å¤±è´¥ã€‚æ£€æŸ¥ç½‘ç»œï¼Œæˆ–è€…è¿™å°ç”µè„‘èƒ½ä¸èƒ½è®¿é—® GitHubã€‚
+  echo [X] À­È¡Ê§°Ü¡£¼ì²éÍøÂç£¬»òÕßÕâÌ¨µçÄÔÄÜ²»ÄÜ·ÃÎÊ GitHub¡£
   goto :end
 )
 git reset --hard -q FETCH_HEAD
 if errorlevel 1 (
-  echo [X] è¦†ç›–æ—§ä»£ç æ—¶å‡ºé”™äº†ã€‚
+  echo [X] ¸²¸Ç¾É´úÂëÊ±³ö´íÁË¡£
   goto :end
 )
 
 for /f %%i in ('git rev-parse --short HEAD') do set NEW=%%i
 if "%OLD%"=="%NEW%" (
-  echo å·²ç»æ˜¯æœ€æ–°ç‰ˆäº†ï¼ˆ%NEW%ï¼‰ï¼Œä»£ç æ²¡æœ‰å˜åŒ–ã€‚
+  echo ÒÑ¾­ÊÇ×îÐÂ°æÁË£¨%NEW%£©£¬´úÂëÃ»ÓÐ±ä»¯¡£
 ) else (
-  echo ä»£ç ï¼š%OLD% -^> %NEW%
+  echo ´úÂë£º%OLD% -^> %NEW%
   git --no-pager log --oneline -8 %NEW%
 )
 
-rem --- 4. é¦–æ¬¡ä½¿ç”¨ã€æˆ–ä¾èµ–æœ‰å˜ï¼Œå°±è£…çŽ¯å¢ƒ ---
+rem --- 4. Ê×´ÎÊ¹ÓÃ¡¢»òÒÀÀµÓÐ±ä£¬¾Í×°»·¾³ ---
 if not exist "venv" (
   echo.
-  echo ç¬¬ä¸€æ¬¡ä½¿ç”¨ï¼Œæ­£åœ¨è£…è¿è¡ŒçŽ¯å¢ƒï¼ˆè¦å‡ åˆ†é’Ÿï¼Œåˆ«å…³çª—å£ï¼‰â€¦
+  echo µÚÒ»´ÎÊ¹ÓÃ£¬ÕýÔÚ×°ÔËÐÐ»·¾³£¨Òª¼¸·ÖÖÓ£¬±ð¹Ø´°¿Ú£©¡­
   python -m venv venv
   if errorlevel 1 (
-    echo [X] åˆ›å»º venv å¤±è´¥ã€‚è¿™å°ç”µè„‘è¦å…ˆè£… Python 3.10 ä»¥ä¸Šï¼Œå®‰è£…æ—¶è®°å¾—å‹¾ Add to PATHã€‚
+    echo [X] ´´½¨ venv Ê§°Ü¡£ÕâÌ¨µçÄÔÒªÏÈ×° Python 3.10 ÒÔÉÏ£¬°²×°Ê±¼ÇµÃ¹´ Add to PATH¡£
     goto :end
   )
   venv\Scripts\python -m pip install -q --upgrade pip
   venv\Scripts\pip install -q -r requirements.txt
-  if errorlevel 1 ( echo [X] è£…ä¾èµ–å¤±è´¥ã€‚& goto :end )
+  if errorlevel 1 ( echo [X] ×°ÒÀÀµÊ§°Ü¡£& goto :end )
   venv\Scripts\playwright install chromium
-  if errorlevel 1 ( echo [X] è£…æµè§ˆå™¨å¤±è´¥ã€‚& goto :end )
-  echo çŽ¯å¢ƒè£…å¥½äº†ã€‚
+  if errorlevel 1 ( echo [X] ×°ä¯ÀÀÆ÷Ê§°Ü¡£& goto :end )
+  echo »·¾³×°ºÃÁË¡£
 ) else (
   if exist requirements.txt (
     certutil -hashfile requirements.txt MD5 | findstr /r /v "hash CertUtil" > "%TEMP%\ab_req_after.txt"
     fc "%TEMP%\ab_req_before.txt" "%TEMP%\ab_req_after.txt" >nul 2>nul
     if errorlevel 1 (
       echo.
-      echo ä¾èµ–æœ‰æ›´æ–°ï¼Œæ­£åœ¨é‡æ–°å®‰è£…â€¦
+      echo ÒÀÀµÓÐ¸üÐÂ£¬ÕýÔÚÖØÐÂ°²×°¡­
       venv\Scripts\pip install -q -r requirements.txt
-      if errorlevel 1 ( echo [X] è£…ä¾èµ–å¤±è´¥ã€‚& goto :end )
-      echo ä¾èµ–å·²æ›´æ–°ã€‚
+      if errorlevel 1 ( echo [X] ×°ÒÀÀµÊ§°Ü¡£& goto :end )
+      echo ÒÀÀµÒÑ¸üÐÂ¡£
     )
   )
 )
 
 echo.
-echo === æ›´æ–°å®Œæˆ ===
-echo æŽ¥ä¸‹æ¥ï¼š
-echo   Â· åŒå‡» run_web.bat å¯åŠ¨
-echo   Â· æµè§ˆå™¨æ‰“å¼€ http://127.0.0.1:5050
-echo   Â· ç¬¬ä¸€æ¬¡ç”¨è¦åœ¨ç½‘é¡µç¬¬ 2 æ­¥ç‚¹ã€ç™»å½• / æ¢è´¦å·ã€‘ï¼Œç™»å½•è‡ªå·±çš„ BC è´¦å·
+echo === ¸üÐÂÍê³É ===
+echo ½ÓÏÂÀ´£º
+echo   ¡¤ Ë«»÷ run_web.bat Æô¶¯
+echo   ¡¤ ä¯ÀÀÆ÷´ò¿ª http://127.0.0.1:5050
+echo   ¡¤ µÚÒ»´ÎÓÃÒªÔÚÍøÒ³µÚ 2 ²½µã¡¾µÇÂ¼ / »»ÕËºÅ¡¿£¬µÇÂ¼×Ô¼ºµÄ BC ÕËºÅ
 echo.
-echo ä½ çš„ç™»å½•æ€ã€æ—¥å¿—ã€ä¸Šä¼ è¿‡çš„è¡¨æ ¼éƒ½æ²¡æœ‰è¢«åŠ¨ã€‚
+echo ÄãµÄµÇÂ¼Ì¬¡¢ÈÕÖ¾¡¢ÉÏ´«¹ýµÄ±í¸ñ¶¼Ã»ÓÐ±»¶¯¡£
 
 :end
 echo.
