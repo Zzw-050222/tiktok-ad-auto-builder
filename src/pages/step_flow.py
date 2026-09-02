@@ -45,7 +45,7 @@ _COPY_PLACEHOLDER = "输入文案"
 _URL_PLACEHOLDER = "https://www.tiktok.com/minis/"
 
 
-def _first_visible(locator, limit=12):
+def _first_visible(locator, limit=200):
     """匹配里第一个【真正可见】的元素，没有就返回 None。
 
     绝不用裸 .first：这个后台到处都是同文本、同占位符的隐藏副本（尺寸 0，藏在

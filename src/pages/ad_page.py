@@ -271,7 +271,7 @@ def wait_ad_page_ready(page):
     """
     from src.pages.common import wait_until
 
-    def _first_visible_of(loc, limit=12):
+    def _first_visible_of(loc, limit=200):
         try:
             n = loc.count()
         except Exception:
@@ -324,7 +324,7 @@ def select_identity(page, handle_name: str):
             n = loc.count()
         except Exception:
             return None
-        for i in range(min(n, 12)):
+        for i in range(min(n, 200)):
             try:
                 if loc.nth(i).is_visible():
                     return loc.nth(i)
@@ -505,7 +505,7 @@ def _open_auto_select(page, find_seconds=10, effect_seconds=12, max_reloads=2):
     )
 
 
-def _first_visible_button_or_none(page, name, limit=12):
+def _first_visible_button_or_none(page, name, limit=60):
     loc = page.get_by_role("button", name=name, exact=True)
     try:
         n = loc.count()
@@ -547,7 +547,7 @@ def _find_auto_select_box(page, timeout_seconds=10):
             n = loc.count()
         except Exception:
             n = 0
-        for i in range(min(n, 12)):
+        for i in range(min(n, 200)):
             try:
                 if loc.nth(i).is_visible():
                     return loc.nth(i)
@@ -588,7 +588,12 @@ def select_creative_materials(page, search_term: str, count: int, used_ids=None,
     返回 (选中数量, 是否绕回头复用过)。选中数量小于 count 只会发生在库里连一轮都
     凑不满 count 个的情况下。
     """
-    from src.pages.common import dismiss_popups, robust_click, wait_until
+    from src.pages.common import (
+        dismiss_popups,
+        robust_click,
+        visible_only,
+        wait_until,
+    )
 
     if used_ids is None:
         used_ids = set()
@@ -623,11 +628,16 @@ def select_creative_materials(page, search_term: str, count: int, used_ids=None,
     # info banner sentence also contains this exact substring and can
     # trigger a spurious "退出此页面" dialog instead of switching tabs), so
     # match the actual tab element via its stable class name instead
-    lib_tab = page.locator(".tab-item-text", has_text="创意素材库")
+    # 这几个都【不能用 .first】：走过的广告的表单还留在 DOM 里，
+    # .first 拿到的是最早那份（隐藏的），点它必然超时。
+    # 使用者一个 29 个广告的计划上就是这么炸的：
+    #   Locator.click: Timeout 5000ms exceeded
+    #   waiting for get_by_placeholder("按名称或ID搜索").first
+    lib_tab = visible_only(page.locator(".tab-item-text", has_text="创意素材库"))
     robust_click(page, lib_tab.first, timeout=5000)
     page.wait_for_timeout(1000)
 
-    search_box = page.get_by_placeholder("按名称或ID搜索")
+    search_box = visible_only(page.get_by_placeholder("按名称或ID搜索"))
     search_box.first.click(timeout=5000)
     page.keyboard.type(search_term)
 
@@ -786,11 +796,11 @@ def select_creative_materials(page, search_term: str, count: int, used_ids=None,
     selected = len(picked)
 
     confirm_btn = page.get_by_role("button", name="添加创意素材", exact=True)
-    robust_click(page, confirm_btn.first, timeout=10000)
+    robust_click(page, visible_only(confirm_btn).first, timeout=10000)
     page.wait_for_timeout(1500)
 
     save_btn = page.get_by_role("button", name="保存", exact=True)
-    robust_click(page, save_btn.first, timeout=10000)
+    robust_click(page, visible_only(save_btn).first, timeout=10000)
     page.wait_for_timeout(2000)
 
     return selected, wrapped
@@ -811,19 +821,14 @@ def first_visible_input(page, locator, what, timeout_seconds=60):
     """
     from src.pages.common import wait_until
 
+    from src.pages.common import first_visible as _fv
+
     def pick():
-        try:
-            n = locator.count()
-        except Exception:
-            return None
-        for i in range(min(n, 12)):
-            el = locator.nth(i)
-            try:
-                if el.is_visible():
-                    return el
-            except Exception:
-                continue
-        return None
+        # 原来是「扫前 12 个挑可见的」。29 个广告的计划上出过事：DOM 里累积的
+        # 隐藏副本超过 12 个之后，真正可见的那个排在后面，永远扫不到，
+        # 表现就是「前面几个广告好好的，第七八个之后开始报找不到」。
+        # 改用 filter(visible=True)，没有数量上限。
+        return _fv(locator)
 
     el = wait_until(page, pick, timeout_seconds=timeout_seconds)
     if el is None:

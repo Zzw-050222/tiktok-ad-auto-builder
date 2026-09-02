@@ -44,7 +44,7 @@ def split_copies(ads_text, separator=COPY_SEPARATOR):
     return parts, None
 
 
-def _visible_copy_boxes(page, limit=12):
+def _visible_copy_boxes(page, limit=200):
     """当前可见的文案输入框，按页面顺序。
 
     只取【可见】的：DOM 里会同时留着别的广告/别的广告组的表单（沿「继续」走过

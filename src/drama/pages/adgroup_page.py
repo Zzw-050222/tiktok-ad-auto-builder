@@ -61,7 +61,7 @@ _on_screen = on_screen
 _scroll_into_comfortable_view = scroll_into_comfortable_view
 
 
-def _first_visible(loc, limit=12):
+def _first_visible(loc, limit=200):
     """一批匹配里挑出真正可见的那一个。这个后台到处是同文本的隐藏副本，
     盲取 .first 是今天反复踩到的坑。"""
     try:

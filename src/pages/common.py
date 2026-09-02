@@ -29,7 +29,7 @@ def wait_visible_text(page, text_or_re, what, timeout_seconds=60):
     def visible_one():
         loc = page.get_by_text(text_or_re)
         n = loc.count()
-        for i in range(min(n, 12)):
+        for i in range(min(n, 200)):
             if loc.nth(i).is_visible():
                 return loc.nth(i)
         return None
@@ -136,3 +136,33 @@ def is_selected(el):
     if cls is not None or tea == "0":
         return False
     return None
+
+
+def visible_only(locator):
+    """只保留【可见】的匹配，交给 Playwright 在浏览器里一次过滤完。
+
+    为什么需要这个：沿「继续」把一个计划里的广告一个个走过去时，走过的那些广告的
+    表单【还留在 DOM 里】，只是不可见。于是同一个占位文字/按钮会命中一大堆元素，
+    而且数量随广告数线性增长。
+
+    这带来两类错误，使用者一个 29 个广告的计划上两个都撞上了：
+      1) 用 .first —— 拿到的是最早那份（隐藏的），点它必然超时。
+         报错长这样：Locator.click: Timeout 5000ms exceeded
+                     waiting for get_by_placeholder("按名称或ID搜索").first
+      2) 自己写循环「扫前 12 个挑可见的」—— 隐藏副本超过 12 个之后，
+         真正可见的那个排在后面，永远扫不到。
+         这也是为什么「前面几个广告好好的，第七八个之后才开始炸」。
+
+    用 filter(visible=True) 而不是自己循环 is_visible()：
+    一次调用在浏览器里筛完，没有数量上限，也不用来回几十次通信。
+    """
+    return locator.filter(visible=True)
+
+
+def first_visible(locator):
+    """第一个可见的匹配；一个都没有返回 None。"""
+    vis = visible_only(locator)
+    try:
+        return vis.first if vis.count() > 0 else None
+    except Exception:
+        return None

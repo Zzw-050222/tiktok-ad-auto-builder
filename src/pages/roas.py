@@ -14,7 +14,7 @@ import re
 from src.pages.viewport import on_screen, scroll_into_comfortable_view
 
 
-def first_visible(loc, limit=12):
+def first_visible(loc, limit=200):
     """一批匹配里挑真正可见的那一个。这个后台到处是同文本的隐藏副本。"""
     try:
         n = loc.count()

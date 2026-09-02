@@ -56,7 +56,7 @@ _PENCIL_SELECTORS = (
 _PENCIL_EXCLUDE = ("question", "help", "info", "tips", "explain")
 
 
-def _first_visible(loc, limit=12):
+def _first_visible(loc, limit=200):
     """一批匹配里挑真正可见的那一个。这个后台到处是同文本的隐藏副本，盲取 .first 会踩坑。"""
     try:
         n = loc.count()
