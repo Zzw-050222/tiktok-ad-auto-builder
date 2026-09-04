@@ -12,8 +12,8 @@ from src.share import pages as P
 
 
 def _share_current_page(page, account_names, warnings):
-    """把【当前页】选中的素材共享给这些账号。返回勾上的账号名列表。"""
-    P.select_all_on_page(page)
+    """把【当前页】选中的素材共享给这些账号。返回 (勾上的账号名列表, 这页几条)。"""
+    count = P.select_all_on_page(page)
     P.open_share_modal(page)
 
     if not P.scroll_modal_to_account_section(page):
@@ -31,7 +31,7 @@ def _share_current_page(page, account_names, warnings):
 
     P.collapse_account_dropdown(page)
     P.confirm_share(page)
-    return picked
+    return picked, count
 
 
 def share_one_drama(page, drama_name, account_names, max_pages=60):
@@ -67,7 +67,7 @@ def share_one_drama(page, drama_name, account_names, max_pages=60):
             "剩下的页没有共享，请人工确认。"
         )
 
-    picked_all, pages_done = [], 0
+    picked_all, pages_done, shared_count = [], 0, 0
     for _ in range(max_pages):
         # 安全闸：每一页动手之前确认筛选还在。
         # 筛选一旦失效，列表就是【整个素材库】，这个循环会把全库共享出去，
@@ -79,8 +79,9 @@ def share_one_drama(page, drama_name, account_names, max_pages=60):
                 "继续共享会把全库共享出去。"
             )
 
-        picked = _share_current_page(page, account_names, warnings)
+        picked, count = _share_current_page(page, account_names, warnings)
         pages_done += 1
+        shared_count += count or 0
         for a in picked:
             if a not in picked_all:
                 picked_all.append(a)
@@ -94,11 +95,15 @@ def share_one_drama(page, drama_name, account_names, max_pages=60):
             "剩下的页没有共享，请人工确认。"
         )
 
-    print(f"      ✓ 「{drama_name}」{found} 条起、共 {pages_done} 页素材"
+    print(f"      ✓ 「{drama_name}」共 {shared_count} 条素材（{pages_done} 页）"
           f"已共享给 {len(picked_all)} 个账号", flush=True)
     return {
         "drama": drama_name,
+        # found 是【第一页】搜出来的条数（每页 100 封顶），不是总数；
+        # 总数看 shared_count —— 实测一部 5 页的剧 found=100 而实际共享了 436 条，
+        # 只报 found 会让人以为只共享了 100 条。
         "found": found,
+        "shared_count": shared_count,
         "pages": pages_done,
         "shared_to": picked_all,
         "warnings": warnings,

@@ -301,7 +301,7 @@ def _suggestion_texts(page, limit=8):
 
 
 def select_all_on_page(page, timeout_seconds=30):
-    """点表头「视频」左边那个小方框 = 全选当前页。
+    """点表头「视频」左边那个小方框 = 全选当前页。返回【勾上了几条】。
 
     验证看【结果】：数据行的复选框真的勾上了没有，勾上了几条。
     不看「点了没点到」—— 这个项目已经因为「验证动作而不是验证结果」吃过亏。
@@ -320,7 +320,7 @@ def select_all_on_page(page, timeout_seconds=30):
             + str(_checkbox_debug(page))
         )
     print(f"      [素材库] 全选当前页，勾上 {n} 条", flush=True)
-    return True
+    return n
 
 
 def _header_checkbox(page):

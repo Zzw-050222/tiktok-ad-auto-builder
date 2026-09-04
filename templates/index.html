@@ -888,7 +888,7 @@ function shPoll() {
       const ok = (s.results || []).filter(r => !r.error);
       const bad = (s.results || []).filter(r => r.error);
       shNote($('shOk'), `完成：${ok.length}/${(s.results || []).length} 部剧共享成功\n` +
-        ok.map(r => `  ${r.drama} — ${r.found} 条起、${r.pages} 页 → ${(r.shared_to||[]).join('、')}`).join('\n'));
+        ok.map(r => `  ${r.drama} — ${r.shared_count ?? r.found} 条、${r.pages} 页 → ${(r.shared_to||[]).join('、')}`).join('\n'));
       const msgs = [];
       bad.forEach(r => msgs.push(`✗ ${r.drama}: ${r.error}`));
       (s.results || []).forEach(r => (r.warnings || []).forEach(w => msgs.push(`! ${r.drama}: ${w}`)));
