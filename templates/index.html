@@ -205,6 +205,29 @@
   .idmsg.ok  { color: var(--ok); }
   .idmsg.err { color: var(--err); }
 
+  /* ---------- 自动共享素材 ---------- */
+  .sh-sep {
+    margin: 34px 0 18px; border-top: 1px solid var(--border-soft);
+    padding-top: 26px; font-size: 12px; color: var(--faint); letter-spacing: .3px;
+  }
+  .sh-row { margin-top: 14px; }
+  .sh-label { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  .sh-hint { font-size: 12px; color: var(--faint); margin-bottom: 6px; line-height: 1.6; }
+  .sh-in, .sh-ta {
+    width: 100%; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 9px;
+    padding: 9px 11px; font-size: 13px; font-family: inherit;
+  }
+  .sh-in:focus, .sh-ta:focus { outline: none; border-color: var(--accent); }
+  .sh-ta { min-height: 84px; resize: vertical; line-height: 1.6; }
+  .sh-modes { display: flex; gap: 8px; }
+  .sh-mode {
+    flex: 1; text-align: center; padding: 9px; font-size: 13px; cursor: pointer;
+    border: 1px solid var(--border); border-radius: 9px; background: var(--panel-2);
+  }
+  .sh-mode.on { border-color: var(--accent); color: var(--accent);
+                background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--panel-2); }
+
   /* ---------- 发布开关 ---------- */
   .switch-row {
     display: flex; align-items: flex-start; gap: 12px;
@@ -427,6 +450,47 @@
       </label>
     </div>
     <button class="run" id="runBtn" disabled>开始搭建</button>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><span class="step-num">★</span>自动共享素材</div>
+    <div class="sh-hint">
+      和上面的搭建【没有关系】：它不建计划，只在<b>创意素材库</b>里，
+      把某个账号里指定剧的素材共享给别的广告账号。<br>
+      做法就是人工那一套：改成 100/页 → 按<b>视频名称</b>搜剧名 → 全选 → 共享 →
+      勾目标账号 → 确认，<b>超过一页会自动翻页共享完</b>。
+    </div>
+
+    <div class="sh-row">
+      <div class="sh-label">用哪个登录态</div>
+      <div class="sh-modes">
+        <div class="sh-mode on" data-shmode="minigame">小游戏 BC</div>
+        <div class="sh-mode" data-shmode="drama">短剧 BC</div>
+      </div>
+    </div>
+
+    <div class="sh-row">
+      <div class="sh-label">源账号广告主 ID</div>
+      <div class="sh-hint">素材在谁那儿。就是素材库网址里 aadvid= 后面那串数字。</div>
+      <input class="sh-in" id="shSource" placeholder="例如 7678025972326662164">
+    </div>
+
+    <div class="sh-row">
+      <div class="sh-label">剧名（一行一个）</div>
+      <div class="sh-hint">按<b>视频名称包含</b>来筛，所以填素材名里带的那段剧名就行。</div>
+      <textarea class="sh-ta" id="shDramas" placeholder="My Contract Husband Fell First&#10;Too late for love"></textarea>
+    </div>
+
+    <div class="sh-row">
+      <div class="sh-label">共享到哪些账号（一行一个，写<b>账号名称</b>）</div>
+      <div class="sh-hint">和弹窗里搜出来的名字要对得上，程序是按名字勾选的。</div>
+      <textarea class="sh-ta" id="shAccounts" placeholder="We shorts-雨垌-剧目测试"></textarea>
+    </div>
+
+    <button class="run" id="shRun" style="margin-top:18px">开始共享</button>
+    <div class="note ok"   id="shOk"></div>
+    <div class="note err"  id="shErr"></div>
+    <div class="note warn" id="shWarn"></div>
   </div>
 
   <div class="card" id="progressCard" style="display:none;">
@@ -773,6 +837,64 @@ function esc(str) {
   const d = document.createElement('div');
   d.textContent = str == null ? '' : String(str);
   return d.innerHTML;
+}
+
+// ---------- 自动共享素材 ----------
+let shMode = 'minigame';
+let shTimer = null;
+document.querySelectorAll('.sh-mode').forEach(el => {
+  el.addEventListener('click', () => {
+    document.querySelectorAll('.sh-mode').forEach(m => m.classList.remove('on'));
+    el.classList.add('on');
+    shMode = el.dataset.shmode;
+  });
+});
+
+function shNote(el, text) { el.textContent = text; el.style.display = text ? 'block' : 'none'; }
+function shClear() { [$('shOk'), $('shErr'), $('shWarn')].forEach(n => n.style.display = 'none'); }
+
+$('shRun').addEventListener('click', () => {
+  shClear();
+  const body = {
+    mode: shMode,
+    source_id: $('shSource').value,
+    dramas: $('shDramas').value,
+    accounts: $('shAccounts').value,
+  };
+  $('shRun').disabled = true;
+  fetch('/share', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  }).then(r => r.json()).then(d => {
+    if (!d.ok) { shNote($('shErr'), d.error || '启动失败'); $('shRun').disabled = false; return; }
+    shNote($('shOk'), `已开始：${d.drama_count} 部剧 → ${d.account_count} 个账号。浏览器窗口会自己操作，别去点它。`);
+    shPoll();
+  }).catch(e => { shNote($('shErr'), String(e)); $('shRun').disabled = false; });
+});
+
+function shPoll() {
+  clearInterval(shTimer);
+  shTimer = setInterval(() => {
+    fetch('/share/status').then(r => r.json()).then(s => {
+      if (s.status === 'running') {
+        shNote($('shOk'), `共享中… ${s.completed}/${s.total}` +
+          (s.current ? `　当前：${s.current}` : ''));
+        return;
+      }
+      clearInterval(shTimer);
+      $('shRun').disabled = false;
+      if (s.status === 'error') { shNote($('shErr'), s.fatal_error || '出错了'); return; }
+      if (s.status !== 'done') return;
+      const ok = (s.results || []).filter(r => !r.error);
+      const bad = (s.results || []).filter(r => r.error);
+      shNote($('shOk'), `完成：${ok.length}/${(s.results || []).length} 部剧共享成功\n` +
+        ok.map(r => `  ${r.drama} — ${r.found} 条起、${r.pages} 页 → ${(r.shared_to||[]).join('、')}`).join('\n'));
+      const msgs = [];
+      bad.forEach(r => msgs.push(`✗ ${r.drama}: ${r.error}`));
+      (s.results || []).forEach(r => (r.warnings || []).forEach(w => msgs.push(`! ${r.drama}: ${w}`)));
+      shNote($('shWarn'), msgs.join('\n'));
+    }).catch(() => {});
+  }, 2000);
 }
 </script>
 </body>

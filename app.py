@@ -81,6 +81,18 @@ login_state = {
     "message": "",
 }
 
+# 自动共享素材。和搭建是两码事（不建计划、只在素材库里操作），所以状态单独放；
+# 但它们共用同一个浏览器 profile，所以必须互斥 —— 见 _busy_reason。
+share_state = {
+    "status": "idle",   # idle | running | done | error
+    "mode": None,
+    "total": 0,
+    "completed": 0,
+    "current": None,
+    "results": [],
+    "fatal_error": None,
+}
+
 
 def _reset_state():
     run_state.update(
@@ -101,6 +113,8 @@ def _busy_reason():
             return "正在搭建，等它跑完再操作账号"
         if login_state["status"] == "waiting":
             return "登录窗口还开着，先在那个窗口里登录完（或者关掉它）"
+        if share_state["status"] == "running":
+            return "正在共享素材，等它跑完再操作"
     return None
 
 
@@ -620,6 +634,96 @@ def run():
     )
     t.start()
     return jsonify({"ok": True})
+
+
+def _run_share(mode, source_id, drama_names, account_names):
+    """后台跑共享。和 _run_build 一个套路：开 profile、跑、把结果收进状态里。"""
+    from src.share.config import PROFILES
+    from src.share.runner import share_materials
+
+    try:
+        with state_lock:
+            share_state.update(
+                status="running", mode=mode, total=len(drama_names),
+                completed=0, current=None, results=[], fatal_error=None,
+            )
+
+        with sync_playwright() as p:
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=str(PROFILES[mode]),
+                headless=False,
+                locale=LOCALE,
+                extra_http_headers={"Accept-Language": ACCEPT_LANGUAGE},
+                viewport={"width": 1600, "height": 1000},
+            )
+            page = context.pages[0] if context.pages else context.new_page()
+
+            # 源账号能不能打开，先验一遍 —— 打不开就没必要往下走
+            access = check_advertiser_access(page, str(source_id).strip())
+            if access.get("state") != "ok":
+                raise ValueError(describe_access(access, source_id, MODES[mode]["label"]))
+
+            def progress(i, total, drama):
+                with state_lock:
+                    share_state["current"] = drama
+                    share_state["completed"] = i - 1
+
+            results = share_materials(
+                page, source_id, drama_names, account_names, on_progress=progress
+            )
+            context.close()
+
+        with state_lock:
+            share_state.update(status="done", results=results,
+                               completed=len(results), current=None)
+    except Exception as e:
+        msg = _friendly_fatal(e)
+        with state_lock:
+            share_state.update(status="error", fatal_error=msg, current=None)
+
+
+def _lines(text):
+    """多行文本框 -> 去空行去空格的列表。"""
+    return [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+
+
+@app.route("/share", methods=["POST"])
+def share():
+    busy = _busy_reason()
+    if busy:
+        return jsonify({"ok": False, "error": busy}), 400
+
+    payload = request.json if request.is_json else {}
+    mode = payload.get("mode", "minigame")
+    if mode not in MODES:
+        return jsonify({"ok": False, "error": f"未知登录态: {mode}"}), 400
+
+    source_id = str(payload.get("source_id") or "").strip()
+    dramas = _lines(payload.get("dramas"))
+    accounts = _lines(payload.get("accounts"))
+
+    missing = []
+    if not source_id:
+        missing.append("源账号 ID")
+    if not dramas:
+        missing.append("剧名（一行一个）")
+    if not accounts:
+        missing.append("目标账号名（一行一个）")
+    if missing:
+        return jsonify({"ok": False, "error": "还没填：" + "、".join(missing)}), 400
+
+    t = threading.Thread(
+        target=_run_share, args=(mode, source_id, dramas, accounts), daemon=True
+    )
+    t.start()
+    return jsonify({"ok": True, "drama_count": len(dramas),
+                    "account_count": len(accounts)})
+
+
+@app.route("/share/status")
+def share_status():
+    with state_lock:
+        return jsonify(dict(share_state))
 
 
 @app.route("/status")
