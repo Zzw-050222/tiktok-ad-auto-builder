@@ -59,6 +59,13 @@ def share_one_drama(page, drama_name, account_names, max_pages=60):
     total = P.total_pages(page)
     if total and total > 1:
         print(f"      [素材库] 「{drama_name}」共 {total} 页，要一页页共享", flush=True)
+    elif total is None:
+        # 读不出分页 = 不知道有没有第 2 页。共享完当前页就会停，
+        # 剩下的页会被【悄悄漏掉】——所以必须说出来，不能当成「只有一页」。
+        warnings.append(
+            "分页条读不出来，只共享了当前这一页。如果这部剧的素材超过一页，"
+            "剩下的页没有共享，请人工确认。"
+        )
 
     picked_all, pages_done = [], 0
     for _ in range(max_pages):

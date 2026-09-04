@@ -36,8 +36,85 @@ VIDEO_NAME_OPTION = "视频名称"
 SHARE_BUTTON = "共享"
 SHARE_MODAL_TITLE = "共享视频"
 ACCOUNT_SECTION = "与选定的广告账号共享"
-ACCOUNT_SEARCH_PLACEHOLDER = "按广告账号名称或 ID 搜索"
+# 弹窗底部那个控件【折叠】时显示的字。注意它不是 input 的 placeholder 属性，
+# 是一个 div 的文字内容 —— 所以 get_by_placeholder 找不到它（第一版就栽在这）。
+ACCOUNT_FIELD_HINT = "按广告账号名称或 ID 搜索"
+# 点开那个下拉之后，悬浮面板里才有真正的 <input>，它的 placeholder 是「搜索」。
+ACCOUNT_SEARCH_PLACEHOLDER = "搜索"
 CONFIRM_BUTTON = "确认"
+
+
+# ---------------------------------------------------------------------------
+# 这个平台的列表和弹窗都渲染在 shadow DOM 里，document.querySelectorAll
+# 【穿不过 shadow root】。探针实测（2026-09-04，素材库列表页）：
+#     平铺 document.querySelectorAll('*') -> 4344 个元素
+#     穿透 shadow 遍历                    -> 15687 个元素
+# 整张表格都在后面那一万多个里。
+#
+# 更坑的是它不报错，只会静默地找不到 —— 或者更糟，匹配到页面上同名的【别的】东西。
+# 第一版找全选框就是这样：平铺查询找「视频」两个字，匹配到的是顶部那个
+# 「视频」标签页，顺着它往上找行、找复选框，当然永远找不到，
+# 报出来的却是一句干巴巴的「没找到全选方框」。
+#
+# 所以这个模块里凡是要在页面上找东西的 JS，一律用 deepAll，不用 querySelectorAll。
+# ---------------------------------------------------------------------------
+_DEEP_JS = r"""
+  function deepAll(root) {
+    const out = [];
+    const stack = [root];
+    while (stack.length) {
+      const n = stack.pop();
+      if (!n) continue;
+      if (n.nodeType === 1) out.push(n);
+      if (n.shadowRoot) stack.push(...n.shadowRoot.children);
+      if (n.children) stack.push(...n.children);
+    }
+    return out;
+  }
+  function deepClearMark(attr) {
+    deepAll(document.documentElement).forEach(e => {
+      if (e.removeAttribute) e.removeAttribute(attr);
+    });
+  }
+  // 复选框宿主：<ks-checkbox-1-1-1g class="KsCheckbox">。
+  // 标签名带版本后缀（同页面上还有 ks-thumbnail-93nwixv3、ks-text-ptiwde8b），
+  // 平台一发版后缀就变，所以按前缀 + class 两个特征认，不写死整个标签名。
+  function isKsCheckbox(e) {
+    const tag = e.tagName.toLowerCase();
+    const cls = e.getAttribute('class') || '';
+    if (!(tag.startsWith('ks-checkbox') || /(^|\s)KsCheckbox(\s|$)/.test(cls))) {
+      return false;
+    }
+    const r = e.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+  // 选没选中：两个信号哪个成立都算。缺一不可 —— 实测这两种框行为【不一样】：
+  //   * 素材表格里的行框：原生 input.checked 会变 True
+  //   * 账号下拉里的选项框：原生 input.checked 【永远是 False】，
+  //     选中只体现在 shadow 里那个 checkbox--checked 的 class 上
+  // 只读原生 input 的话，账号勾上了也读成没勾上；这个项目在 ks-radio 上
+  // 已经栽过一次同样的坑（选中状态只活在 shadow DOM 里）。
+  // 而且这里读错的代价不是「报个错」：外层看到「没勾上」会再点一次，
+  // 那一下正好把已经勾上的取消掉，最后什么都没共享。
+  function ksChecked(host) {
+    const sr = host.shadowRoot;
+    if (!sr) return false;
+    const inp = sr.querySelector('input');
+    if (inp && inp.checked) return true;
+    return [...sr.querySelectorAll('*')].some(
+      e => /checkbox--checked/.test(e.getAttribute('class') || ''));
+  }
+"""
+
+
+def _deep(body):
+    """把 deepAll 那几个工具函数塞进一段 JS 的开头。"""
+    return "() => {" + _DEEP_JS + body + "}"
+
+
+def _deep_el(body):
+    """同上，但收一个参数 —— locator.evaluate 传进来的元素，或 page.evaluate 传的值。"""
+    return "(el) => {" + _DEEP_JS + body + "}"
 
 
 def _vis(loc):
@@ -183,9 +260,8 @@ def _video_name_option(page):
         # 只认建议项那一条：它同时含「视频名称」和「包含」
         if VIDEO_NAME_OPTION not in txt or "包含" not in txt:
             continue
-        marked = el.evaluate("""el => {
-          document.querySelectorAll('[data-sh-opt]').forEach(
-            e => e.removeAttribute('data-sh-opt'));
+        marked = el.evaluate(_deep_el(r"""
+          deepClearMark('data-sh-opt');
           let n = el;
           for (let k = 0; k < 6 && n; k++) {
             const r = n.getBoundingClientRect();
@@ -195,10 +271,10 @@ def _video_name_option(page):
               n.setAttribute('data-sh-opt', '1');
               return true;
             }
-            n = n.parentElement;
+            n = n.parentElement || (n.getRootNode() && n.getRootNode().host);
           }
           return false;
-        }""")
+        """))
         if marked:
             loc = page.locator('[data-sh-opt="1"]')
             try:
@@ -227,59 +303,99 @@ def _suggestion_texts(page, limit=8):
 def select_all_on_page(page, timeout_seconds=30):
     """点表头「视频」左边那个小方框 = 全选当前页。
 
-    验证看结果：全选之后「共享」按钮会从禁用变可点。
+    验证看【结果】：数据行的复选框真的勾上了没有，勾上了几条。
+    不看「点了没点到」—— 这个项目已经因为「验证动作而不是验证结果」吃过亏。
     """
     cb = wait_until(page, lambda: _header_checkbox(page), timeout_seconds=timeout_seconds)
     if cb is None:
-        raise ValueError("没找到表头「视频」左边的全选方框")
+        raise ValueError(
+            "没找到表头「视频」左边的全选方框。\n现场：" + str(_checkbox_debug(page))
+        )
     robust_click(page, cb, timeout=8000)
-    page.wait_for_timeout(1200)
+
+    n = wait_until(page, lambda: _checked_row_count(page) or None, timeout_seconds=15)
+    if not n:
+        raise ValueError(
+            "点了表头的全选方框，但一条数据行都没被勾上。\n现场："
+            + str(_checkbox_debug(page))
+        )
+    print(f"      [素材库] 全选当前页，勾上 {n} 条", flush=True)
     return True
 
 
 def _header_checkbox(page):
-    """表头那一行里、「视频」左边的复选框。
+    """表头那一行里、「视频」左边的全选方框。
 
-    按结构找：先定位表头里的「视频」两个字，再在它所在的表头行里找复选框。
-    不能全页面找复选框 —— 每一行数据前面都有一个。
+    探针实测（2026-09-04）：它是 <ks-checkbox-1-1-1g class="KsCheckbox">，20x20，
+    在 tr.table__thead-row 里，和「视频」两个字同一条基线（y 都是 314，
+    它在 x=256，「视频」在 x=308）。整张表在 shadow DOM 里，见文件开头那段说明。
+
+    按表头行来找，不能全页面找复选框 —— 100 行数据每行前面都有一个一模一样的。
     """
-    marked = page.evaluate("""() => {
-      document.querySelectorAll('[data-sh-all]').forEach(
-        e => e.removeAttribute('data-sh-all'));
-      // 找到文字恰好是「视频」的那个表头单元格
-      const all = [...document.querySelectorAll('*')];
-      for (const el of all) {
-        if (el.children.length) continue;
-        if ((el.textContent || '').trim() !== '视频') continue;
-        const r = el.getBoundingClientRect();
-        if (r.width <= 0 || r.height <= 0) continue;
-        // 往上找到整行，再在行里找复选框
-        let row = el;
-        for (let k = 0; k < 6 && row; k++) {
-          row = row.parentElement;
-          if (!row) break;
-          const rr = row.getBoundingClientRect();
-          if (rr.width < 300) continue;
-          const cb = row.querySelector(
-            'input[type="checkbox"], [role="checkbox"], [class*="checkbox" i]');
-          if (cb) {
-            const cr = cb.getBoundingClientRect();
-            if (cr.width > 0 && cr.height > 0) {
-              cb.setAttribute('data-sh-all', '1');
-              return true;
-            }
-          }
-        }
+    marked = page.evaluate(_deep(r"""
+      deepClearMark('data-sh-all');
+      const all = deepAll(document.documentElement);
+      // 表头行：class 里带 thead 的 tr（实测 table__thead-row）
+      const heads = all.filter(e =>
+        e.tagName === 'TR'
+        && /thead/i.test(e.getAttribute('class') || '')
+        && e.getBoundingClientRect().width > 300);
+      for (const row of heads) {
+        const cb = deepAll(row).find(isKsCheckbox);
+        if (cb) { cb.setAttribute('data-sh-all', '1'); return 'thead'; }
       }
-      return false;
-    }""")
+      // 退路：表头行的 class 万一改了名，就取整页最靠上的那个方框
+      // —— 数据行的方框都在表头下面。要求至少有两个，避免页面上只剩一个
+      // 孤零零的复选框时把它当成全选框点下去。
+      const boxes = all.filter(isKsCheckbox)
+        .sort((a, b) => a.getBoundingClientRect().y - b.getBoundingClientRect().y);
+      if (boxes.length >= 2) { boxes[0].setAttribute('data-sh-all', '1'); return 'topmost'; }
+      return null;
+    """))
     if not marked:
         return None
+    if marked == "topmost":
+        print("      [素材库] 注意：表头行没认出来，按「最靠上的方框」当全选框用了",
+              flush=True)
     loc = page.locator('[data-sh-all="1"]')
     try:
         return loc.first if loc.count() > 0 else None
     except Exception:
         return None
+
+
+def _checked_row_count(page):
+    """数据行里已经勾上的条数（不含表头那个全选框本身）。"""
+    try:
+        return page.evaluate(_deep(r"""
+          return deepAll(document.documentElement)
+            .filter(isKsCheckbox)
+            .filter(e => !e.hasAttribute('data-sh-all'))
+            .filter(ksChecked).length;
+        """))
+    except Exception:
+        return 0
+
+
+def _checkbox_debug(page):
+    """找不到 / 点不动时的现场：页面上到底有几个方框、勾上几个、表头行认出来没有。"""
+    try:
+        return page.evaluate(_deep(r"""
+          const all = deepAll(document.documentElement);
+          const boxes = all.filter(isKsCheckbox);
+          return {
+            可见方框数: boxes.length,
+            已勾选: boxes.filter(ksChecked).length,
+            表头行数: all.filter(e => e.tagName === 'TR'
+              && /thead/i.test(e.getAttribute('class') || '')).length,
+            数据行数: all.filter(e => e.tagName === 'TR'
+              && !/thead/i.test(e.getAttribute('class') || '')).length,
+            穿透元素数: all.length,
+            平铺元素数: document.querySelectorAll('*').length,
+          };
+        """))
+    except Exception as e:
+        return f"现场也读不出来: {e}"
 
 
 def open_share_modal(page, timeout_seconds=30):
@@ -320,8 +436,66 @@ def _visible_button_names(page, limit=20):
     return out
 
 
-def _account_search_box(page):
-    return _first_vis(page.get_by_placeholder(ACCOUNT_SEARCH_PLACEHOLDER))
+def _account_select(page):
+    """弹窗底部「与选定的广告账号共享」下面那个下拉控件（折叠状态）。
+
+    探针实测（2026-09-04）：
+        ks-select-1-1-1g.KsSelect  @(924,1222) 552x36
+          └ ks-value-field-1-1-1g.KsValueField
+              └ div.value-field__tagged__input   文字 = 「按广告账号名称或 ID 搜索」
+
+    它是个【多选带标签】的下拉，不是输入框。那句「按广告账号名称或 ID 搜索」
+    是 div 的文字内容而不是 placeholder 属性，所以 get_by_placeholder 找不到 ——
+    第一版就是在这里死的，报「弹窗里没找到账号搜索框」。
+    """
+    marked = page.evaluate(_deep(r"""
+      deepClearMark('data-sh-sel');
+      const all = deepAll(document.documentElement);
+      const label = all.find(e => !e.children.length
+        && (e.textContent || '').trim() === '与选定的广告账号共享');
+      if (!label) return false;
+      // 从标签往上找它那个小容器，再在容器里找 KsSelect
+      let box = label;
+      for (let k = 0; k < 5 && box; k++) {
+        box = box.parentElement || (box.getRootNode() && box.getRootNode().host);
+        if (!box) break;
+        const sel = deepAll(box).find(e => {
+          const tag = e.tagName.toLowerCase();
+          const cls = e.getAttribute('class') || '';
+          if (!(tag.startsWith('ks-select') || /(^|\s)KsSelect(\s|$)/.test(cls))) {
+            return false;
+          }
+          const r = e.getBoundingClientRect();
+          return r.width > 100 && r.height > 10;
+        });
+        if (sel) { sel.setAttribute('data-sh-sel', '1'); return true; }
+      }
+      return false;
+    """))
+    if not marked:
+        return None
+    loc = page.locator('[data-sh-sel="1"]')
+    try:
+        return loc.first if loc.count() > 0 else None
+    except Exception:
+        return None
+
+
+def _account_search_input(page):
+    """点开下拉之后，悬浮面板里那个真正的输入框（placeholder=「搜索」）。"""
+    return _first_vis(page.get_by_placeholder(ACCOUNT_SEARCH_PLACEHOLDER, exact=True))
+
+
+def _open_account_dropdown(page, timeout_seconds=15):
+    """点开账号下拉，等面板里的搜索框出来。已经开着就直接返回。"""
+    if _account_search_input(page) is not None:
+        return True
+    sel = _account_select(page)
+    if sel is None:
+        return False
+    robust_click(page, sel, timeout=8000)
+    return bool(wait_until(page, lambda: _account_search_input(page) is not None,
+                           timeout_seconds=timeout_seconds))
 
 
 def scroll_modal_to_account_section(page, timeout_seconds=30):
@@ -332,15 +506,16 @@ def scroll_modal_to_account_section(page, timeout_seconds=30):
     不用 mouse.wheel（滚轮滚的是鼠标底下那层，不确定是哪个）。
     """
     for _ in range(int(timeout_seconds * 2)):
-        if _account_search_box(page) is not None:
+        if _account_select(page) is not None:
             return True
-        page.evaluate("""() => {
-          // 找到弹窗里那个能滚的容器，往下推
-          const title = [...document.querySelectorAll('*')].find(
+        page.evaluate(_deep(r"""
+          const all = deepAll(document.documentElement);
+          // 找到弹窗里那个能滚的容器，往下推（实测 div.modal__body）
+          const title = all.find(
             e => !e.children.length && (e.textContent || '').trim() === '共享视频');
           let n = title;
           for (let k = 0; k < 10 && n; k++) {
-            n = n.parentElement;
+            n = n.parentElement || (n.getRootNode() && n.getRootNode().host);
             if (!n) break;
             const st = getComputedStyle(n);
             if (n.scrollHeight > n.clientHeight + 4 && /auto|scroll/.test(st.overflowY)) {
@@ -348,16 +523,21 @@ def scroll_modal_to_account_section(page, timeout_seconds=30):
               return;
             }
           }
-          // 退路：弹窗里所有可滚的都推到底
-          document.querySelectorAll('*').forEach(e => {
+          // 退路：只推弹窗里的滚动容器。
+          // 不能「页面上所有能滚的都推到底」—— 那会把弹窗背后那张 100 行的表
+          // 也一起滚到底（实测 table__wrapper 被推到 scrollTop=4614），
+          // 白白改动背景页面的状态。
+          all.forEach(e => {
+            const cls = e.getAttribute('class') || '';
+            if (!/modal/i.test(cls)) return;
             const st = getComputedStyle(e);
             if (e.scrollHeight > e.clientHeight + 4 && /auto|scroll/.test(st.overflowY)) {
               e.scrollTop = e.scrollHeight;
             }
           });
-        }""")
+        """))
         page.wait_for_timeout(500)
-    return _account_search_box(page) is not None
+    return _account_select(page) is not None
 
 
 def add_target_accounts(page, account_names, timeout_seconds=25):
@@ -368,18 +548,21 @@ def add_target_accounts(page, account_names, timeout_seconds=25):
     删干净很关键：不删的话第二次搜索是在上一次的词后面接着打，搜不到东西。
     """
     picked, warnings = [], []
-    box = _account_search_box(page)
-    if box is None:
+    if not _open_account_dropdown(page):
         raise ValueError(
-            f"弹窗里没找到账号搜索框（占位文字「{ACCOUNT_SEARCH_PLACEHOLDER}」）。"
-            "可能是没滚到底。"
+            f"点不开「{ACCOUNT_SECTION}」下面那个下拉（也没等到 placeholder="
+            f"「{ACCOUNT_SEARCH_PLACEHOLDER}」的输入框）。可能是没滚到底。"
         )
 
     for name in account_names:
         name = str(name).strip()
         if not name:
             continue
-        box = _account_search_box(page)
+        # 每一轮都重新确认下拉是开的：勾完一个之后面板有可能收起来
+        if not _open_account_dropdown(page):
+            warnings.append(f"要勾「{name}」时账号下拉打不开了")
+            break
+        box = _account_search_input(page)
         if box is None:
             warnings.append(f"要勾「{name}」时账号搜索框不见了")
             break
@@ -396,12 +579,76 @@ def add_target_accounts(page, account_names, timeout_seconds=25):
                 "确认账号名有没有写错、或者这个账号在不在你的可共享范围里）"
             )
             continue
-        robust_click(page, row, timeout=8000)
-        page.wait_for_timeout(900)
+
+        if not _tick_on(page, row, lambda n=name: _account_row_checked(page, n) is True):
+            warnings.append(f"点了「{name}」那一行，但方框没有变成勾选状态，没算数")
+            continue
         picked.append(name)
         print(f"      [共享] 已勾选目标账号「{name}」", flush=True)
 
+    # 收尾再验一次【总账】：字段里应该给每个勾上的账号挂一个标签。
+    # 这是和逐个回读互相独立的证据，也是点「确认」之前最后一道确认。
+    field = _account_field_text(page)
+    if field is not None:
+        missing = [n for n in picked if n not in field]
+        if missing:
+            warnings.append(
+                f"这些账号逐个看是勾上了，但最后在选择框里没看到它们的标签：{missing}"
+            )
     return picked, warnings
+
+
+def _tick_on(page, locator, is_on, tries=2):
+    """把一个开关型控件点到【开】。已经是开的就不点。
+
+    先看状态再决定点不点，是这里的关键：不能用 robust_click。
+    robust_click 点不动会升级成 force 点击、再升级成 JS 派发，而复选框是开关 ——
+    第一下其实已经生效、只是 Playwright 报了超时的话，第二下就把它关回去了。
+    实测就是这么丢的：账号明明勾上了，回读读错以为没勾上，再点一次给取消了。
+    """
+    for _ in range(tries):
+        if is_on():
+            return True
+        try:
+            locator.click(timeout=6000)
+        except Exception:
+            pass
+        page.wait_for_timeout(1000)
+    return bool(is_on())
+
+
+def _account_field_text(page):
+    """账号选择框里现在显示的文字（勾上的账号会在里面挂成标签）。读不到返回 None。"""
+    try:
+        return page.evaluate(_deep(r"""
+          const f = deepAll(document.documentElement).find(
+            e => /value-field__tagged(\s|$)/.test(e.getAttribute('class') || ''));
+          return f ? (f.textContent || '').trim() : null;
+        """))
+    except Exception:
+        return None
+
+
+def _account_row_checked(page, name):
+    """「name」那一行的方框勾上了没有。读不出来返回 None（不当成失败）。"""
+    try:
+        return page.evaluate(_deep_el(r"""
+          const want = el;
+          const rows = deepAll(document.documentElement).filter(isKsCheckbox);
+          for (const cb of rows) {
+            let n = cb, txt = '';
+            for (let k = 0; k < 6 && n; k++) {
+              n = n.parentElement || (n.getRootNode() && n.getRootNode().host);
+              if (!n) break;
+              const t = (n.textContent || '').trim();
+              if (t && t.length < 120) { txt = t; break; }
+            }
+            if (txt === want) return ksChecked(cb);
+          }
+          return null;
+        """), name)
+    except Exception:
+        return None
 
 
 def _account_result_row(page, name):
@@ -409,22 +656,27 @@ def _account_result_row(page, name):
 
     从账号名往上走到行，再取行里的复选框 —— 直接点名字未必落在可点区域上。
     """
-    cands = _vis(page.get_by_text(name, exact=False))
+    # 先按【完全相同】找，找不到再放宽到包含。
+    # 实测这个账号列表里的名字是 '余禾-We shorts-US-GF-Light-yutong-0827-01'、
+    # '...-0827-02'、'...-0827-03' 这种成串的，前缀彼此重叠：
+    # 只按「包含」找，写 -01 会先撞上 -011 之类的行，勾错账号还看不出来。
+    cands = _vis(page.get_by_text(name, exact=True))
     try:
+        if cands.count() == 0:
+            cands = _vis(page.get_by_text(name, exact=False))
         n = cands.count()
     except Exception:
         return None
     for i in range(min(n, 12)):
         el = cands.nth(i)
-        marked = el.evaluate("""el => {
-          document.querySelectorAll('[data-sh-acct]').forEach(
-            e => e.removeAttribute('data-sh-acct'));
+        marked = el.evaluate(_deep_el(r"""
+          deepClearMark('data-sh-acct');
           let n = el;
           for (let k = 0; k < 6 && n; k++) {
             const r = n.getBoundingClientRect();
             if (r.width > 150 && r.height >= 24 && r.height < 120) {
-              const cb = n.querySelector(
-                'input[type="checkbox"], [role="checkbox"], [class*="checkbox" i]');
+              // 行里的方框和表头那个是同一种自定义元素，也在 shadow 里
+              const cb = deepAll(n).find(isKsCheckbox);
               const target = cb || n;
               const tr = target.getBoundingClientRect();
               if (tr.width > 0 && tr.height > 0) {
@@ -432,10 +684,10 @@ def _account_result_row(page, name):
                 return true;
               }
             }
-            n = n.parentElement;
+            n = n.parentElement || (n.getRootNode() && n.getRootNode().host);
           }
           return false;
-        }""")
+        """))
         if marked:
             loc = page.locator('[data-sh-acct="1"]')
             try:
@@ -513,39 +765,42 @@ def filter_active(page):
 
 
 def _pager_numbers(page):
-    """分页条上的页码：{"current": 当前页, "last": 能看到的最大页码}。读不出返回 None。"""
+    """分页条上的页码：{"current": 当前页, "last": 能看到的最大页码}。读不出返回 None。
+
+    探针实测（2026-09-04）分页条的真实结构：
+        div.pager.pager--full                      文字 '12345'
+          ├ ks-button-1-1-1g.pager__item             '1'  <- 当前页还带 pager__item--active
+          ├ ks-button-1-1-1g.pager__item             '2' …
+          ├ ks-icon-button-1-1-1g.pager__button      右边那个 > 箭头
+          └ ks-select-1-1-1g.pager__select           每页条数
+
+    第一版是「找页面上所有纯数字的小方块，取最靠下的那一排」，
+    结果把表格里那些数值为 0 的单元格当成了页码，读出来是
+    {current: None, last: 0, all: [0,0,0,0,0]} —— 于是 5 页的剧只共享了第 1 页
+    就当作跑完了，而且一声不吭。分页读错在这里是【会丢数据】的错，
+    所以现在只认 pager__item 这个类名，认不出来宁可返回 None 让上层报出来。
+    """
     try:
-        return page.evaluate("""() => {
-          // 分页条：一堆并排的、内容是纯数字的小按钮
-          const nums = [...document.querySelectorAll('*')].filter(e => {
-            if (e.children.length) return false;
+        return page.evaluate(_deep(r"""
+          const items = deepAll(document.documentElement).filter(e => {
+            const cls = e.getAttribute('class') || '';
+            if (!/(^|\s)pager__item(\s|$)/.test(cls)) return false;
             const t = (e.textContent || '').trim();
             if (!/^\d{1,4}$/.test(t)) return false;
             const r = e.getBoundingClientRect();
-            return r.width > 0 && r.height > 0 && r.width < 80 && r.height < 60;
+            return r.width > 0 && r.height > 0;
           });
-          if (!nums.length) return null;
-          // 取最靠下的那一排（分页条在列表底部）
-          const maxY = Math.max(...nums.map(e => e.getBoundingClientRect().y));
-          const row = nums.filter(e => Math.abs(e.getBoundingClientRect().y - maxY) < 24);
-          if (!row.length) return null;
-          const vals = row.map(e => parseInt((e.textContent || '').trim(), 10));
-          // 当前页：那个被高亮/加边框的。找不到就当第 1 页。
+          if (!items.length) return null;
+          const vals = items.map(e => parseInt((e.textContent || '').trim(), 10));
           let cur = null;
-          for (const e of row) {
-            const st = getComputedStyle(e);
-            const parentSt = e.parentElement ? getComputedStyle(e.parentElement) : null;
-            const bordered = (b) => b && b !== 'none' && !/rgba\(0, 0, 0, 0\)/.test(b)
-                                    && !/0px/.test(b);
-            if (bordered(st.borderColor) && st.borderStyle !== 'none'
-                || (parentSt && parentSt.borderStyle && parentSt.borderStyle !== 'none'
-                    && parentSt.borderWidth !== '0px')) {
+          for (const e of items) {
+            if (/pager__item--active/.test(e.getAttribute('class') || '')) {
               cur = parseInt((e.textContent || '').trim(), 10);
               break;
             }
           }
           return {current: cur, last: Math.max(...vals), all: vals};
-        }""")
+        """))
     except Exception:
         return None
 
@@ -571,17 +826,15 @@ def go_to_next_page(page, timeout_seconds=40):
     if cur is None or last is None or cur >= last:
         return False
 
-    want = str(cur + 1)
-    target = None
-    if want in [str(v) for v in info.get("all", [])]:
-        for cand in _iter_visible(page.get_by_text(want, exact=True)):
-            target = cand
-            break
+    # 只在分页条【里面】点。不能全页面找文字是「2」的元素 ——
+    # 这张表里到处都是 0/1/2 这样的数值单元格，随便点一个既翻不了页，
+    # 还可能点进某个素材的详情页去。
+    target = _pager_item(page, cur + 1)
     if target is not None:
         robust_click(page, target, timeout=6000)
     else:
-        # 退路：点右边那个「下一页」箭头
-        nxt = _first_vis(page.get_by_role("button", name="下一页"))
+        # 退路：点分页条右边那个「>」箭头
+        nxt = _pager_next_arrow(page)
         if nxt is None:
             return False
         robust_click(page, nxt, timeout=6000)
@@ -593,6 +846,56 @@ def go_to_next_page(page, timeout_seconds=40):
     _wait_rows_settled(page)
     print(f"      [素材库] 翻到第 {cur + 1}/{last} 页", flush=True)
     return True
+
+
+def _pager_item(page, number):
+    """分页条上写着这个数字的那个页码按钮（ks-button.pager__item）。"""
+    marked = page.evaluate(_deep_el(r"""
+      deepClearMark('data-sh-page');
+      const want = String(el);
+      const hit = deepAll(document.documentElement).find(e => {
+        const cls = e.getAttribute('class') || '';
+        if (!/(^|\s)pager__item(\s|$)/.test(cls)) return false;
+        if ((e.textContent || '').trim() !== want) return false;
+        const r = e.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      });
+      if (!hit) return false;
+      hit.setAttribute('data-sh-page', '1');
+      return true;
+    """), str(number))
+    if not marked:
+        return None
+    loc = page.locator('[data-sh-page="1"]')
+    try:
+        return loc.first if loc.count() > 0 else None
+    except Exception:
+        return None
+
+
+def _pager_next_arrow(page):
+    """分页条右边那个「>」按钮（ks-icon-button.pager__button，里面是 chevron-right）。"""
+    marked = page.evaluate(_deep(r"""
+      deepClearMark('data-sh-next');
+      const hit = deepAll(document.documentElement).find(e => {
+        const cls = e.getAttribute('class') || '';
+        if (!/(^|\s)pager__button(\s|$)/.test(cls)) return false;
+        if (!deepAll(e).some(c => /chevron-right/.test(c.tagName.toLowerCase()
+                                   + ' ' + (c.getAttribute('class') || '')))) return false;
+        const r = e.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      });
+      if (!hit) return false;
+      hit.setAttribute('data-sh-next', '1');
+      return true;
+    """))
+    if not marked:
+        return None
+    loc = page.locator('[data-sh-next="1"]')
+    try:
+        return loc.first if loc.count() > 0 else None
+    except Exception:
+        return None
 
 
 def _iter_visible(loc, limit=20):
