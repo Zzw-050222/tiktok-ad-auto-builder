@@ -484,3 +484,127 @@ def confirm_share(page, timeout_seconds=30):
             f"\n当前可见按钮：{_visible_button_names(page)}"
         )
     return True
+
+
+# ---------------------------------------------------------------------------
+# 分页
+#
+# 使用者：「假如超过一百条并且你也共享完前一百条…点击右下角的下一个页码，
+# 然后回去再重复一遍全选然后共享的操作，直到没有多余的页码为止」。
+#
+# 换页之后勾选会清空（截图里第 2 页所有方框都是空的），所以每一页都要
+# 重新全选一次。
+# ---------------------------------------------------------------------------
+
+FILTER_CLEAR = "清除"
+
+
+def filter_active(page):
+    """筛选条件还在不在。
+
+    这是一道【安全闸】，不是可有可无的检查：
+    翻页共享是「每页全选 -> 共享」的循环，一旦筛选没生效，列表就是【整个素材库】
+    （使用者截图里是 68 页 × 100 条 ≈ 6800 条），循环下去会把全库共享给目标账号，
+    而且很难收回。所以每一页动手之前都确认一次。
+
+    判据：应用了筛选之后，搜索框旁边会出现「清除」（和「保存」）。
+    """
+    return _first_vis(page.get_by_text(FILTER_CLEAR, exact=True)) is not None
+
+
+def _pager_numbers(page):
+    """分页条上的页码：{"current": 当前页, "last": 能看到的最大页码}。读不出返回 None。"""
+    try:
+        return page.evaluate("""() => {
+          // 分页条：一堆并排的、内容是纯数字的小按钮
+          const nums = [...document.querySelectorAll('*')].filter(e => {
+            if (e.children.length) return false;
+            const t = (e.textContent || '').trim();
+            if (!/^\d{1,4}$/.test(t)) return false;
+            const r = e.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 && r.width < 80 && r.height < 60;
+          });
+          if (!nums.length) return null;
+          // 取最靠下的那一排（分页条在列表底部）
+          const maxY = Math.max(...nums.map(e => e.getBoundingClientRect().y));
+          const row = nums.filter(e => Math.abs(e.getBoundingClientRect().y - maxY) < 24);
+          if (!row.length) return null;
+          const vals = row.map(e => parseInt((e.textContent || '').trim(), 10));
+          // 当前页：那个被高亮/加边框的。找不到就当第 1 页。
+          let cur = null;
+          for (const e of row) {
+            const st = getComputedStyle(e);
+            const parentSt = e.parentElement ? getComputedStyle(e.parentElement) : null;
+            const bordered = (b) => b && b !== 'none' && !/rgba\(0, 0, 0, 0\)/.test(b)
+                                    && !/0px/.test(b);
+            if (bordered(st.borderColor) && st.borderStyle !== 'none'
+                || (parentSt && parentSt.borderStyle && parentSt.borderStyle !== 'none'
+                    && parentSt.borderWidth !== '0px')) {
+              cur = parseInt((e.textContent || '').trim(), 10);
+              break;
+            }
+          }
+          return {current: cur, last: Math.max(...vals), all: vals};
+        }""")
+    except Exception:
+        return None
+
+
+def current_page(page):
+    info = _pager_numbers(page)
+    if not info:
+        return None
+    return info.get("current")
+
+
+def go_to_next_page(page, timeout_seconds=40):
+    """翻到下一页。已经是最后一页返回 False。
+
+    优先点【下一个页码】那个数字（使用者说的就是这个），点不到再退回右边那个
+    「>」箭头。换完页要等列表重新加载完，而且勾选会被清空 —— 下一轮要重新全选。
+    """
+    info = _pager_numbers(page)
+    if not info:
+        return False
+    cur = info.get("current")
+    last = info.get("last")
+    if cur is None or last is None or cur >= last:
+        return False
+
+    want = str(cur + 1)
+    target = None
+    if want in [str(v) for v in info.get("all", [])]:
+        for cand in _iter_visible(page.get_by_text(want, exact=True)):
+            target = cand
+            break
+    if target is not None:
+        robust_click(page, target, timeout=6000)
+    else:
+        # 退路：点右边那个「下一页」箭头
+        nxt = _first_vis(page.get_by_role("button", name="下一页"))
+        if nxt is None:
+            return False
+        robust_click(page, nxt, timeout=6000)
+
+    ok = wait_until(page, lambda: current_page(page) == cur + 1,
+                    timeout_seconds=timeout_seconds)
+    if not ok:
+        return False
+    _wait_rows_settled(page)
+    print(f"      [素材库] 翻到第 {cur + 1}/{last} 页", flush=True)
+    return True
+
+
+def _iter_visible(loc, limit=20):
+    v = _vis(loc)
+    try:
+        n = v.count()
+    except Exception:
+        return
+    for i in range(min(n, limit)):
+        yield v.nth(i)
+
+
+def total_pages(page):
+    info = _pager_numbers(page)
+    return None if not info else info.get("last")

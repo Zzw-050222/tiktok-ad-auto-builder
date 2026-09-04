@@ -4,36 +4,15 @@
     打开源账号素材库 -> 改成 100/页
     -> 对每一部剧：搜索 -> 全选 -> 共享 -> 勾目标账号 -> 确认
 
-超过 100 条素材的情况，使用者说解决办法在后面（还没给）。
-现在的行为是【明确说出来】：筛出多少条、这一轮只共享了当前页的多少条。
-接口留在 share_one_drama 的返回值里，补的时候在那里加翻页就行。
+超过 100 条素材（一页放不下）的情况：使用者的做法是共享完当前页之后点下一个页码，
+再重复一遍「全选 -> 共享」，直到没有多余的页码。share_one_drama 就是这么做的。
 """
 
 from src.share import pages as P
 
 
-def share_one_drama(page, drama_name, account_names):
-    """把一部剧的素材共享给一批账号。返回 {"drama","found","shared_to","warnings"}。"""
-    warnings = []
-
-    found = P.search_by_video_name(page, drama_name)
-    if found == 0:
-        return {
-            "drama": drama_name,
-            "found": 0,
-            "shared_to": [],
-            "warnings": [f"按视频名称搜「{drama_name}」一条素材都没搜到，跳过"],
-        }
-
-    # 全选只选【当前页】。100/页 的情况下，超过 100 条就有剩下的没共享到。
-    # 使用者说这个情况的处理办法在后面 —— 先如实报出来，不假装全共享了。
-    if found >= 100:
-        warnings.append(
-            f"「{drama_name}」筛出 {found} 条（已经到当前页上限 100），"
-            "本轮只共享了当前页这一批，后面还有没共享到的。"
-            "翻页共享的做法使用者还没给，补上之后这里要改。"
-        )
-
+def _share_current_page(page, account_names, warnings):
+    """把【当前页】选中的素材共享给这些账号。返回勾上的账号名列表。"""
     P.select_all_on_page(page)
     P.open_share_modal(page)
 
@@ -52,13 +31,69 @@ def share_one_drama(page, drama_name, account_names):
 
     P.collapse_account_dropdown(page)
     P.confirm_share(page)
+    return picked
 
-    print(f"      ✓ 「{drama_name}」{found} 条素材已共享给 {len(picked)} 个账号",
-          flush=True)
+
+def share_one_drama(page, drama_name, account_names, max_pages=60):
+    """把一部剧的素材共享给一批账号，【翻页共享到最后一页】。
+
+    使用者的做法：「共享完前一百条…点击右下角的下一个页码，然后回去再重复一遍
+    全选然后共享的操作，直到没有多余的页码为止」。换页之后勾选会清空，
+    所以每一页都要重新全选、重新在弹窗里勾一遍目标账号。
+
+    max_pages 是个保险丝，不是业务规则：万一分页读错了导致翻不完，
+    也不至于无限循环。真撞到上限会明确报出来。
+    """
+    warnings = []
+
+    found = P.search_by_video_name(page, drama_name)
+    if found == 0:
+        return {
+            "drama": drama_name,
+            "found": 0,
+            "pages": 0,
+            "shared_to": [],
+            "warnings": [f"按视频名称搜「{drama_name}」一条素材都没搜到，跳过"],
+        }
+
+    total = P.total_pages(page)
+    if total and total > 1:
+        print(f"      [素材库] 「{drama_name}」共 {total} 页，要一页页共享", flush=True)
+
+    picked_all, pages_done = [], 0
+    for _ in range(max_pages):
+        # 安全闸：每一页动手之前确认筛选还在。
+        # 筛选一旦失效，列表就是【整个素材库】，这个循环会把全库共享出去，
+        # 而且很难收回。宁可停在这里让人来看。
+        if not P.filter_active(page):
+            raise ValueError(
+                f"第 {pages_done + 1} 页上筛选条件不见了（搜索框旁边没有「清除」）。"
+                "已经停下，没有共享这一页 —— 筛选失效时列表是整个素材库，"
+                "继续共享会把全库共享出去。"
+            )
+
+        picked = _share_current_page(page, account_names, warnings)
+        pages_done += 1
+        for a in picked:
+            if a not in picked_all:
+                picked_all.append(a)
+        print(f"      [共享] 第 {pages_done} 页已共享给 {len(picked)} 个账号", flush=True)
+
+        if not P.go_to_next_page(page):
+            break
+    else:
+        warnings.append(
+            f"翻了 {max_pages} 页还没到最后一页，已经停下（保险丝）。"
+            "剩下的页没有共享，请人工确认。"
+        )
+
+    print(f"      ✓ 「{drama_name}」{found} 条起、共 {pages_done} 页素材"
+          f"已共享给 {len(picked_all)} 个账号", flush=True)
     return {
         "drama": drama_name,
         "found": found,
-        "shared_to": picked,
+        "pages": pages_done,
+        "shared_to": picked_all,
         "warnings": warnings,
     }
 
