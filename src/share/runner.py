@@ -120,11 +120,6 @@ def share_materials(page, source_advertiser_id, drama_names, account_names,
     from src.share.config import CREATIVE_LIBRARY_URL
 
     url = CREATIVE_LIBRARY_URL.format(str(source_advertiser_id).strip())
-    page.goto(url, wait_until="domcontentloaded", timeout=90000)
-    page.wait_for_timeout(3000)
-
-    if not P.set_page_size_100(page):
-        print("      [素材库] 没能把每页条数改成 100，继续按当前页数跑", flush=True)
 
     results = []
     for i, drama in enumerate(drama_names, 1):
@@ -132,6 +127,10 @@ def share_materials(page, source_advertiser_id, drama_names, account_names,
             on_progress(i, len(drama_names), drama)
         print(f"    === [{i}/{len(drama_names)}] {drama} ===", flush=True)
         try:
+            # 每一部剧都从【重新加载过】的列表开始。
+            # 不这么做的话，上一部剧的筛选标签还挂在搜索框上，
+            # 下一部剧会变成「两个剧名同时包含」，搜出来永远是 0 条。
+            P.open_library(page, url)
             results.append(share_one_drama(page, drama, account_names))
         except Exception as e:
             results.append({
@@ -143,7 +142,8 @@ def share_materials(page, source_advertiser_id, drama_names, account_names,
             })
             print(f"      ✗ 失败: {type(e).__name__}: {str(e).splitlines()[0][:160]}",
                   flush=True)
-            # 下一部剧要从干净的列表开始：弹窗可能还开着，先关掉
+            # 弹窗可能还开着，关掉。下一部剧本来就会重新加载页面，
+            # 所以这一步只是让屏幕上别留个半开的窗口，不是清场的手段。
             try:
                 if P.share_modal_open(page):
                     page.keyboard.press("Escape")

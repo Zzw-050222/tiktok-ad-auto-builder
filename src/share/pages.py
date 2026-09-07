@@ -130,6 +130,48 @@ def _first_vis(loc):
         return None
 
 
+def open_library(page, url, timeout_seconds=60):
+    """打开（或重新加载）素材库列表页，并确认列表上【没有残留的筛选】。
+
+    每换一部剧都要重新加载一次，原因：
+    上一次搜的东西不是「搜索框里的字」，而是框左边挂着的一个筛选标签
+    （「视频名称 包含每一项: Too, late, for, love ×」）。
+    search_by_video_name 里的 box.fill("") 只清得掉输入框里的字，那个标签还在，
+    接着搜下一部剧就变成【两个筛选同时成立】—— 结果必然是 0 条。
+    而日志上看到的只有一句「筛出 0 条」，看起来非常像剧名写错了。
+    第一次两部剧的运行就是这么丢的第二部，我当时还归因成了剧名写法问题。
+
+    刷新之后【回读确认】没有筛选（有筛选时搜索框旁边会出现「清除」），
+    万一还在就点一下「清除」——不靠「刷新一定管用」这个假设。
+    """
+    page.goto(url, wait_until="domcontentloaded", timeout=90000)
+    page.wait_for_timeout(3000)
+
+    if not set_page_size_100(page, timeout_seconds=timeout_seconds):
+        print("      [素材库] 没能把每页条数改成 100，继续按当前页数跑", flush=True)
+
+    if filter_active(page):
+        print("      [素材库] 刷新后还挂着筛选，点「清除」", flush=True)
+        clear_filter(page)
+    if filter_active(page):
+        raise ValueError(
+            "重新加载素材库之后，上一部剧的筛选条件还挂在搜索框上，「清除」也没点掉。"
+            "再搜下一部剧会变成两个筛选同时成立，只会搜出 0 条，所以在这里停下。"
+        )
+    return True
+
+
+def clear_filter(page):
+    """点搜索框旁边的「清除」，把已应用的筛选去掉。"""
+    btn = _first_vis(page.get_by_text(FILTER_CLEAR, exact=True))
+    if btn is None:
+        return False
+    robust_click(page, btn, timeout=6000)
+    page.wait_for_timeout(1500)
+    _wait_rows_settled(page)
+    return not filter_active(page)
+
+
 def set_page_size_100(page, timeout_seconds=60):
     """把右下角的每页条数从 20 改成 100。
 
