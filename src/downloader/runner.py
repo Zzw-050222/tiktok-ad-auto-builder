@@ -23,6 +23,22 @@ DL_HEADLESS = os.path.join(DL_DIR, "headless.py")
 POT_SERVER_JS = os.path.join(DL_DIR, "pot-provider", "server", "build", "main.js")
 NODE_MODULES = os.path.join(DL_DIR, "pot-provider", "server", "node_modules")
 
+# 一键更新在没有 Homebrew 的电脑上，会把 ffmpeg / node 装到项目自己的目录里
+# （见 scripts/setup_downloader.sh：那种机器上装 brew 要管理员密码，
+#  就不算「什么都不用操作」了）。这两个目录要排在系统路径【前面】。
+LOCAL_BIN = os.path.join(DL_DIR, ".bin")
+LOCAL_NODE_BIN = os.path.join(DL_DIR, ".node", "bin")
+
+
+def _search_path():
+    return [LOCAL_BIN, LOCAL_NODE_BIN, "/opt/homebrew/bin", "/usr/local/bin"]
+
+
+def subprocess_path(base=None):
+    """给子进程用的 PATH：本地装的排前面，然后是 Homebrew，最后是继承来的。"""
+    base = base if base is not None else os.environ.get("PATH", "")
+    return ":".join(_search_path()) + (":" + base if base else "")
+
 # 日志留多少行。下载进度刷得很快，不封顶会把内存吃光。
 MAX_LOG_LINES = 500
 
@@ -61,44 +77,42 @@ state = {
 # ---------------------------------------------------------------------------
 
 def _which(name):
-    found = shutil.which(name)
-    if found:
-        return found
-    for cand in (f"/opt/homebrew/bin/{name}", f"/usr/local/bin/{name}"):
+    """找一个可执行文件。顺序要和子进程的 PATH 一致，否则会出现
+    「自检说没装、子进程其实找得到」这种自相矛盾的情况。"""
+    for d in _search_path():
+        cand = os.path.join(d, name)
         if os.path.exists(cand):
             return cand
-    return None
+    return shutil.which(name)
 
 
 def check_env():
     """返回 (致命问题列表, 提醒列表)。致命的会挡住启动。"""
     fatal, warn = [], []
 
+    # 这些本该由【一键更新】自动装好（scripts/setup_downloader.sh）。
+    # 所以提示语一律指向「再双击一次一键更新」，而不是叫人去敲命令 ——
+    # 使用者的要求就是别人的电脑上什么都不用操作。
+    again = "双击一次【一键更新.command】就会自动装好"
+
     if not os.path.exists(DL_PYTHON):
-        fatal.append(
-            f"下载器的 Python 环境不在：{DL_PYTHON}。"
-            "在 yt-bulk-downloader 文件夹里执行 "
-            "`python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`"
-        )
+        fatal.append(f"下载器的运行环境还没装（{DL_PYTHON} 不存在）。{again}")
     if not os.path.exists(DL_HEADLESS):
-        fatal.append(f"缺文件：{DL_HEADLESS}")
+        fatal.append(f"缺文件：{DL_HEADLESS}。{again}")
 
     if not _which("ffmpeg"):
         fatal.append(
-            "没装 ffmpeg。下载下来的视频和音频是两个流，要靠它合并；"
-            "没有它 YouTube 的视频一定失败。装：brew install ffmpeg"
+            "没有 ffmpeg。下载下来的视频和音频是两个流，要靠它合并，"
+            f"没有它 YouTube 的视频一定失败。{again}"
         )
 
     if not _which("node"):
-        warn.append("没装 node，YouTube 的反机器人服务起不来，YouTube 大概率 403（TikTok 不受影响）")
+        warn.append(f"没有 node，YouTube 会 403（TikTok 不受影响）。{again}")
     elif not os.path.isdir(NODE_MODULES):
-        warn.append(
-            "pot-provider 的 node_modules 没装，YouTube 反机器人服务起不来 —— "
-            "在 yt-bulk-downloader/pot-provider/server 里执行 npm install（TikTok 不受影响）"
-        )
+        warn.append(f"YouTube 反机器人服务的依赖没装，YouTube 会 403（TikTok 不受影响）。{again}")
 
     if not _which("aria2c"):
-        warn.append("没装 aria2c，下载会慢一些（不影响成功率）。装：brew install aria2")
+        warn.append("没有 aria2c，下载会慢一些，不影响成功率。")
 
     return fatal, warn
 
@@ -233,7 +247,7 @@ def start(urls, dest, sort_key="latest", top_n=50, scan_limit=200,
     # Finder / launchd 起的进程 PATH 很窄，ffmpeg、aria2c、node 都在 Homebrew 里，
     # 不显式加进去子进程就找不到 —— 下载器自己的 run.command 也是这么做的。
     env = dict(os.environ)
-    env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + env.get("PATH", "")
+    env["PATH"] = subprocess_path()
     env["PYTHONUNBUFFERED"] = "1"
 
     with _lock:

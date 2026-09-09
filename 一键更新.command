@@ -141,9 +141,21 @@ elif [ "$BEFORE_REQ" != "$AFTER_REQ" ]; then
   echo "依赖已更新。"
 fi
 
+# ---- 5. 批量下载视频要用的东西（ffmpeg / node / yt-dlp）----
+# 单独一个脚本，见 scripts/setup_downloader.sh。可重复执行，装过的会跳过。
+#
+# 这里【绝不能】让它的失败把整个更新带崩：下载功能装不上是小事，
+# 搭建功能的更新不能因此中断。所以既 || true，也在子 shell 里跑，
+# 让它自己的 set -e / exit 影响不到这个脚本。
+if [ -f scripts/setup_downloader.sh ]; then
+  say "正在检查「批量下载视频」需要的东西…"
+  ( bash scripts/setup_downloader.sh ) || warn "下载功能没能装全，其它功能不受影响。"
+fi
+
 # 新拉下来的脚本也要给执行权限。git 自己会带 100755 过来，但从 zip 装的那批
 # 文件夹里旧文件的权限位可能已经被解压工具改过，补一次不亏。
 chmod +x run_web.sh 一键更新.command 一键安装.command 启动.command 2>/dev/null || true
+chmod +x scripts/setup_downloader.sh 2>/dev/null || true
 
 # 从网上下的 zip 解压出来带 com.apple.quarantine，双击 .command 会弹
 # 「无法验证开发者」。更新完顺手解一次，免得使用者每加一个新脚本就要右键一次。

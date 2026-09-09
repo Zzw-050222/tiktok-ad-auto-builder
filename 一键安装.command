@@ -175,7 +175,15 @@ else
     以后双击「一键更新.command」会自动改用直接下载的方式，一样能更新。"
 fi
 
-# ---- 7. 自检 ----
+# ---- 7. 批量下载视频要用的东西 ----
+# ffmpeg / node / yt-dlp。单独一个脚本，见 scripts/setup_downloader.sh。
+# 装不上【不算安装失败】：搭建功能不依赖它，所以只警告不 die。
+if [ -f scripts/setup_downloader.sh ]; then
+  say "装「批量下载视频」需要的东西…"
+  ( bash scripts/setup_downloader.sh ) || warn "下载功能没能装全，不影响搭建功能。"
+fi
+
+# ---- 8. 自检 ----
 # 不做自检的话，「装完了」只是「命令没报错」，不等于真的能跑。
 say "自检"
 venv/bin/python -c "import flask, openpyxl, playwright, requests, dotenv" 2>/dev/null \
@@ -190,6 +198,15 @@ with sync_playwright() as p:
 " 2>/dev/null || die "Chromium 没装上。重新双击本文件再试一次。"
 venv/bin/python -c "import app" >/dev/null 2>&1 \
   && ok "程序本体能加载" || warn "程序本体加载有问题，启动时如果报错请把日志发给开发者"
+
+# 下载功能能不能用，问它自己（和网页上那张卡片查的是同一套判断）
+venv/bin/python -c "
+import sys; sys.path.insert(0, '.')
+from src.downloader import runner
+fatal, _ = runner.check_env()
+print('  \033[32m✓\033[0m 批量下载视频可用' if not fatal
+      else '  \033[33m!\033[0m 批量下载视频还差东西：' + fatal[0])
+" 2>/dev/null || warn "下载功能自检没跑起来（不影响搭建）"
 
 say "✓ 装好了"
 cat <<'TXT'

@@ -23,6 +23,7 @@ import json
 import os
 import sys
 import threading
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -76,6 +77,21 @@ def main():
         # YouTube 的反机器人要这个本地 PO-token 服务；TikTok 用不上，
         # 但起一下没坏处，起不来引擎自己会打警告继续走。
         pot = engine.ensure_pot_server(lambda m, replace=False: emit("log", msg=str(m)))
+
+        # 引擎只等 10 秒就放弃。这在【第一次跑】的电脑上不够：
+        # 实测一台没有 Homebrew、node 是刚从 nodejs.org 下下来的机器上，
+        # 首次启动要 5 秒以上（macOS 还要对新下载的二进制做一次安全扫描），
+        # 于是明明能起来却被判成失败，YouTube 全部 403。
+        # 这里再多等一会儿 —— 只在进程还活着的时候等，没起来也只是慢一点。
+        if pot is not None and not engine._pot_running():
+            emit("log", msg="反机器人服务还在启动，再等等（第一次会慢）…")
+            for _ in range(40):                      # 最多再等 20 秒
+                if pot.poll() is not None:           # 进程已经死了，不用等了
+                    break
+                if engine._pot_running():
+                    emit("log", msg="反机器人服务已就绪。")
+                    break
+                time.sleep(0.5)
 
         engine.run_jobs(
             urls=a["urls"],
