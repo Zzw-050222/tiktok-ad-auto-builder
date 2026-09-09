@@ -1,0 +1,8 @@
+# yt-bulk-downloader dependencies.
+# yt-dlp is the download engine; curl_cffi gives it TLS impersonation (TikTok, etc.).
+# bgutil-ytdlp-pot-provider is the yt-dlp plugin that talks to the local Node PO-token
+# server in pot-provider/server (needed for YouTube's anti-bot). ffmpeg + node are system
+# tools (see "brew" in tool.json). macOS also needs Tk:  brew install python-tk@3.13
+yt-dlp
+curl_cffi
+bgutil-ytdlp-pot-provider

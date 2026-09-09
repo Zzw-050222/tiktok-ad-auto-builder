@@ -1,0 +1,10 @@
+{
+  "name": "yt-bulk-downloader",
+  "title": "YT Bulk Downloader (YouTube/TikTok/Snapchat)",
+  "python_requirements": "requirements.txt",
+  "python": "python3.13",
+  "venv": ".venv",
+  "brew": "ffmpeg node",
+  "node_dir": "pot-provider/server",
+  "run": "python app.py"
+}

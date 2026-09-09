@@ -228,6 +228,37 @@
   .sh-mode.on { border-color: var(--accent); color: var(--accent);
                 background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--panel-2); }
 
+  /* ---------- 批量下载视频 ---------- */
+  .dl-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px 14px; margin-top: 14px; }
+  .dl-sel {
+    width: 100%; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 9px;
+    padding: 9px 11px; font-size: 13px; font-family: inherit;
+  }
+  .dl-sel:focus { outline: none; border-color: var(--accent); }
+  .dl-log {
+    margin-top: 14px; background: #0e1116; border: 1px solid var(--border);
+    border-radius: 9px; padding: 10px 12px; color: #c8d1dc;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11.5px; line-height: 1.6;
+    max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  }
+  .dl-srcs { margin-top: 12px; font-size: 12px; }
+  .dl-src {
+    display: flex; gap: 10px; align-items: baseline;
+    padding: 6px 0; border-top: 1px solid var(--border-soft);
+  }
+  .dl-src .u { flex: 1; word-break: break-all; }
+  .dl-src .s { flex: none; color: var(--faint); }
+  .dl-btns { display: flex; gap: 10px; margin-top: 18px; }
+  .dl-btns button.run { margin-top: 0; }
+  button.dl-stop {
+    flex: none; width: 130px; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 10px;
+    font-size: 14px; cursor: pointer;
+  }
+  button.dl-stop:disabled { opacity: .45; cursor: default; }
+
   /* ---------- 发布开关 ---------- */
   .switch-row {
     display: flex; align-items: flex-start; gap: 12px;
@@ -491,6 +522,112 @@
     <div class="note ok"   id="shOk"></div>
     <div class="note err"  id="shErr"></div>
     <div class="note warn" id="shWarn"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><span class="step-num">▼</span>批量下载视频</div>
+    <div class="sh-hint">
+      和上面所有功能<b>都没有关系</b>：不开 TikTok 后台、不碰登录态，
+      单纯把 YouTube / TikTok 频道里的视频批量拉到本地。<br>
+      它在一个<b>独立的进程</b>里跑，就算下载卡死或者报错，也影响不到正在搭建或共享的任务。
+    </div>
+
+    <div class="note err"  id="dlEnvBad"  style="display:none"></div>
+    <div class="note warn" id="dlEnvWarn" style="display:none"></div>
+
+    <div class="sh-row">
+      <div class="sh-label">频道 / 主页链接（一行一个）</div>
+      <div class="sh-hint">
+        TikTok 主页打不开时（报 <i>Unable to extract secondary user ID</i>），
+        改贴<b>那个账号里任意一条视频的链接</b>，程序会自己认出账号。
+      </div>
+      <textarea class="sh-ta" id="dlUrls" placeholder="https://www.youtube.com/@某频道&#10;https://www.tiktok.com/@某账号"></textarea>
+    </div>
+
+    <div class="sh-row">
+      <div class="sh-label">存到哪个文件夹</div>
+      <div class="sh-hint">按 <span id="dlDestHint">&lt;文件夹&gt;/&lt;账号名&gt;/&lt;标题&gt;.mp4</span> 存。文件夹不存在会自动建。</div>
+      <input class="sh-in" id="dlDest" placeholder="">
+    </div>
+
+    <div class="dl-grid">
+      <div>
+        <div class="sh-label">怎么挑</div>
+        <select class="dl-sel" id="dlSort">
+          <option value="latest">最新的（最快，不用逐条查数据）</option>
+          <option value="view_count">播放量最高</option>
+          <option value="like_count">点赞量最高</option>
+        </select>
+      </div>
+      <div>
+        <div class="sh-label">每个频道要几条</div>
+        <input class="sh-in" id="dlTopN" value="50">
+      </div>
+      <div>
+        <div class="sh-label">最高清晰度</div>
+        <select class="dl-sel" id="dlQuality">
+          <option value="720">720p</option>
+          <option value="1080" selected>1080p</option>
+          <option value="1440">1440p</option>
+          <option value="2160">4K</option>
+          <option value="480">480p（最省空间）</option>
+          <option value="0">不限（可能几个 G 一条）</option>
+        </select>
+      </div>
+      <div>
+        <div class="sh-label">同时下几条</div>
+        <input class="sh-in" id="dlParallel" value="3">
+      </div>
+      <div>
+        <div class="sh-label">扫描最近多少条</div>
+        <div class="sh-hint">只有按播放/点赞排序时才用；0 = 整个频道。</div>
+        <input class="sh-in" id="dlScan" value="200">
+      </div>
+      <div>
+        <div class="sh-label">用哪个浏览器的登录状态</div>
+        <div class="sh-hint">YouTube 和 TikTok 都要求登录过才给下。</div>
+        <select class="dl-sel" id="dlBrowser">
+          <option value="chrome" selected>Chrome</option>
+          <option value="edge">Edge</option>
+          <option value="firefox">Firefox</option>
+          <option value="safari">Safari</option>
+          <option value="brave">Brave</option>
+          <option value="none">不用登录状态</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="sh-row">
+      <div class="sh-label">…或者用 cookies.txt 文件（可留空）</div>
+      <div class="sh-hint">
+        新版 Chrome 会加密 cookie，读不出来时用这个更稳：
+        用「Get cookies.txt LOCALLY」扩展导出，把文件路径填这儿。填了就以它为准。
+      </div>
+      <input class="sh-in" id="dlCookieFile" placeholder="/Users/你/Downloads/cookies.txt">
+    </div>
+
+    <div class="switch-row">
+      <label class="switch">
+        <input type="checkbox" id="dlPreferRes"><span class="slider"></span>
+      </label>
+      <label class="switch-text" for="dlPreferRes">
+        优先要最高分辨率（可能是 HEVC）
+        <div class="sub2">
+          默认挑 H.264 + AAC，什么播放器都有声音。TikTok 的 1080p 只有 HEVC 版，
+          打开这个才能拿到，但有些播放器会静音或者放不出来。
+        </div>
+      </label>
+    </div>
+
+    <div class="dl-btns">
+      <button class="run" id="dlRun">开始下载</button>
+      <button class="dl-stop" id="dlStop" disabled>停止</button>
+    </div>
+
+    <div class="note ok"  id="dlOk"></div>
+    <div class="note err" id="dlErr"></div>
+    <div class="dl-srcs" id="dlSrcs"></div>
+    <div class="dl-log"  id="dlLog" style="display:none"></div>
   </div>
 
   <div class="card" id="progressCard" style="display:none;">
@@ -895,6 +1032,88 @@ function shPoll() {
       shNote($('shWarn'), msgs.join('\n'));
     }).catch(() => {});
   }, 2000);
+}
+
+// ---------- 批量下载视频 ----------
+// 完全独立的一套：自己的接口(/download/*)、自己的轮询、自己的按钮状态，
+// 不碰上面搭建和共享的任何变量。
+let dlTimer = null;
+
+function dlNote(el, text) { el.textContent = text; el.style.display = text ? 'block' : 'none'; }
+
+// 页面一打开就自检环境：缺 ffmpeg 之类的，现在就说，别等点了开始跑一半才炸
+fetch('/download/env').then(r => r.json()).then(d => {
+  if (d.default_dest && !$('dlDest').value) $('dlDest').placeholder = d.default_dest;
+  if (d.default_dest) $('dlDestHint').textContent = d.default_dest + '/<账号名>/<标题>.mp4';
+  if ((d.fatal || []).length) {
+    dlNote($('dlEnvBad'), '这些不装好，下载跑不起来：\n' + d.fatal.map(x => '· ' + x).join('\n'));
+    $('dlRun').disabled = true;
+  }
+  if ((d.warn || []).length) {
+    dlNote($('dlEnvWarn'), d.warn.map(x => '· ' + x).join('\n'));
+  }
+}).catch(() => {});
+
+$('dlRun').addEventListener('click', () => {
+  dlNote($('dlOk'), ''); dlNote($('dlErr'), '');
+  const body = {
+    urls: $('dlUrls').value,
+    dest: $('dlDest').value || $('dlDest').placeholder,
+    sort_key: $('dlSort').value,
+    top_n: $('dlTopN').value,
+    scan_limit: $('dlScan').value,
+    max_height: $('dlQuality').value,
+    parallel: $('dlParallel').value,
+    prefer_res: $('dlPreferRes').checked,
+    cookies_browser: $('dlBrowser').value,
+    cookiefile: $('dlCookieFile').value,
+  };
+  $('dlRun').disabled = true;
+  fetch('/download/start', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  }).then(r => r.json()).then(d => {
+    if (!d.ok) { dlNote($('dlErr'), d.error || '启动失败'); $('dlRun').disabled = false; return; }
+    $('dlStop').disabled = false;
+    $('dlLog').style.display = 'block';
+    dlPoll();
+  }).catch(e => { dlNote($('dlErr'), String(e)); $('dlRun').disabled = false; });
+});
+
+$('dlStop').addEventListener('click', () => {
+  $('dlStop').disabled = true;
+  fetch('/download/stop', {method: 'POST'}).then(r => r.json()).then(d => {
+    if (!d.ok) dlNote($('dlErr'), d.error || '停不下来');
+  }).catch(() => {});
+});
+
+function dlPoll() {
+  clearInterval(dlTimer);
+  dlTimer = setInterval(() => {
+    fetch('/download/status').then(r => r.json()).then(s => {
+      $('dlSrcs').innerHTML = (s.sources || []).map(x =>
+        `<div class="dl-src"><div class="u">${esc(x.url)}</div>` +
+        `<div class="s">${esc(x.status || '')}` +
+        `${x.total ? ` ${x.done}/${x.total}` : ''}</div></div>`).join('');
+
+      const log = $('dlLog');
+      // 只有原本就贴在底部时才自动滚，免得人在往上翻历史时被拽回去
+      const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+      log.textContent = (s.lines || []).join('\n');
+      if (atBottom) log.scrollTop = log.scrollHeight;
+
+      if (s.status === 'running') {
+        dlNote($('dlOk'), '下载中… ' + (s.status_msg || ''));
+        return;
+      }
+      clearInterval(dlTimer);
+      $('dlRun').disabled = false;
+      $('dlStop').disabled = true;
+      if (s.status === 'error') { dlNote($('dlErr'), s.error || '出错了'); return; }
+      if (s.status === 'stopped') { dlNote($('dlOk'), '已停止。再点一次「开始下载」会从断点接着下。'); return; }
+      if (s.status === 'done') { dlNote($('dlOk'), '全部完成。存在：' + (s.dest || '')); }
+    }).catch(() => {});
+  }, 1500);
 }
 </script>
 </body>

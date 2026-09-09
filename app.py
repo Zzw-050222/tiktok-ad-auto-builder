@@ -39,6 +39,11 @@ from src.identity_lookup import IDENTITY_FILE, identity_file_exists, load_identi
 
 app = Flask(__name__)
 
+# 批量下载视频。整块功能都在 src/downloader/ 里，路由都挂在 /download 下面，
+# 不碰浏览器 profile、不共用 state_lock —— 和搭建、共享互不影响，可以同时跑。
+from src.downloader.web import bp as download_bp      # noqa: E402
+app.register_blueprint(download_bp)
+
 UPLOAD_PATH = UPLOADS_DIR / "latest.xlsx"
 
 # 不要用 5000：macOS 的「隔空播放接收器」（ControlCenter）常驻占着 *:5000，

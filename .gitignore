@@ -39,3 +39,13 @@ test-table/
 短剧-excel.xlsx
 商品库-剧目.xlsx
 商品库短剧搭建表.xlsx
+
+# ---- 批量下载视频（yt-bulk-downloader）----
+# 装出来的东西，不进仓库也不进 zip：一共 6000 多个文件，而且都能重装。
+# .venv 自己带了一份 .gitignore，这里再写一遍是防止哪天重建 venv 时它没生成。
+yt-bulk-downloader/.venv/
+yt-bulk-downloader/.npm-cache/
+yt-bulk-downloader/pot-provider/server/node_modules/
+# 下载器自己在下载目录里放的记录文件（断点续传用），万一有人把下载目录设在项目里
+.download_state.json
+.download_args.json
